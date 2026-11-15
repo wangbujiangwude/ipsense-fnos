@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>汇总日志保存位置 · 选择结果</title>
+<style>
+html,body{margin:0;height:100%;background:#f7f9fc;color:#1f2733;
+  font:14px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}
+.box{max-width:520px;margin:15vh auto;padding:28px 32px;background:#fff;
+  border:1px solid #e3e8ef;border-radius:14px;box-shadow:0 12px 40px rgba(20,40,80,.10)}
+h1{font-size:17px;margin:0 0 8px;font-weight:600}
+p{margin:0;color:#6b7686;font-size:13px}
+code{background:#f1f4f9;border-radius:4px;padding:1px 5px}
+</style>
+</head>
+<body>
+<div class="box">
+  <h1 id="msg">正在处理选择结果…</h1>
+  <p>这是 ipsense 1.1.13 的文件夹选择器回跳页，只负责把飞牛原生授权页的结果
+  通过 <code>postMessage</code> 与 <code>sessionStorage</code> 交回应用主页面，
+  不读取也不修改任何设备数据。卡片会在回填后自动关闭。</p>
+</div>
+<script>
+/* 1.1.13 应用内模态卡片（同源 iframe）专用回跳页。
+   飞牛 /app-auth/pick-file 完成后跳回 redirectUri 并追加
+   status / method / appName / state / path(JSON 数组) 等参数
+   （桌面壳 _method_ 页 z(e,t) 拼装：path 用 JSON.stringify 序列化）。
+   本页只做结果归一化 + 回传，不自绘目录树、不读写设备数据。
+   1.1.13：兼容 path 为单值 / 字符串 / 对象数组，status 兼容 ok/1/true。 */
+(function () {
+  var p = new URLSearchParams(location.search);
+  var paths = [];
+  var raw = p.get('path') || p.get('paths') || '[]';
+  try {
+    paths = JSON.parse(raw);
+  } catch (e) {
+    // 不是合法 JSON（例如直接给了一个裸路径字符串）时按单路径处理
+    paths = raw && String(raw).charAt(0) !== '[' ? [String(raw)] : [];
+  }
+  if (!Array.isArray(paths)) paths = paths ? [paths] : [];
+  paths = paths.map(function (v) {
+    if (typeof v === 'string') return v.trim();
+    if (v && typeof v === 'object') {
+      return String(v.path || v.filePath || v.fullPath || v.url || '').trim();
+    }
+    return '';
+  }).filter(Boolean);
+  var status = p.get('status') || 'error';
+  if (status === 'ok' || status === '1' || status === 'true') status = 'success';
+  var payload = {
+    type: 'ipsense:fnos-picker',
+    state: p.get('state') || '',
+    status: status,
+    path: paths,
+    error: p.get('error') || ''
+  };
+  try { sessionStorage.setItem('ipsense.fnos.picker.result', JSON.stringify(payload)); } catch (e) {}
+  try {
+    if (window.parent !== window) window.parent.postMessage(payload, location.origin);
+    if (window.opener && window.opener !== window) window.opener.postMessage(payload, location.origin);
+  } catch (e2) {}
+  var el = document.getElementById('msg');
+  if (el) el.textContent = payload.status === 'success'
+    ? '已选择，正在回填保存位置…'
+    : (payload.status === 'cancel' ? '已取消，正在关闭…' : '选择未完成，正在关闭…');
+})();
+</script>
+</body>
+</html>

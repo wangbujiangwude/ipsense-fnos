@@ -1,0 +1,31 @@
+# 文本统一 LF：Windows 上避免 .sh / cmd/* 检出成 CRLF 导致 shebang 失效
+*.sh   text eol=lf
+*.py   text eol=lf
+*.js   text eol=lf
+*.css  text eol=lf
+*.html text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.txt  text eol=lf
+manifest  text eol=lf
+config    text eol=lf
+privilege text eol=lf
+resource  text eol=lf
+src/cmd/*          text eol=lf
+src/wizard/*        text eol=lf
+src/config/*       text eol=lf
+src/app/scripts/*  text eol=lf
+src/app/ui/config  text eol=lf
+
+# 二进制：禁止任何换行转换
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.xdb  binary
+*.fpk  binary
+*.tgz  binary
+*.gz   binary
+*.tar  binary
+*.zip  binary

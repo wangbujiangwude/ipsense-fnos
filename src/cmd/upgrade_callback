@@ -1,0 +1,14 @@
+#!/bin/bash
+# 升级后：起新版（数据库与配置在数据目录，自动沿用）
+set -u
+APP_DEST="${TRIM_APPDEST:-/var/apps/ipsense/target}"
+VAR_DIR="${TRIM_PKGVAR:-/vol1/@appdata/ipsense}"
+GW="$APP_DEST/server/gateway.py"
+mkdir -p "$VAR_DIR" "$VAR_DIR/inbox" 2>/dev/null
+PY=""
+for c in python3 /usr/bin/python3 /usr/local/bin/python3 python; do
+    if command -v "$c" >/dev/null 2>&1; then PY=$(command -v "$c"); break; fi
+done
+[ -z "$PY" ] && PY=python3
+[ -f "$GW" ] && "$PY" "$GW" start
+exit 0

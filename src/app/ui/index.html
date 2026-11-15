@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IP 动态感知</title>
+<style>/*__CSS__*/</style>
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 40 40" width="38" height="38">
+          <circle cx="20" cy="20" r="17" fill="none" stroke="#3b82f6" stroke-width="1.5" opacity=".55"/>
+          <circle cx="20" cy="20" r="11" fill="none" stroke="#22d3ee" stroke-width="1.2" opacity=".6"/>
+          <circle cx="20" cy="20" r="4.5" fill="#3b82f6"/>
+          <path d="M20 20 L33 9" stroke="#ff4d6d" stroke-width="2" stroke-linecap="round"/>
+          <circle cx="33" cy="9" r="2.8" fill="#ff4d6d"/>
+          <circle cx="9" cy="28" r="2.2" fill="#34d399"/>
+        </svg>
+      </div>
+      <div class="brand-text">
+        <h1>IP 动态感知</h1>
+        <p>设备访问来源 · 实时态势与溯源记录</p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <div class="status-pill" id="statusPill"><i></i><span>连接中…</span></div>
+      <div class="segmented" id="rangeSeg">
+        <button data-r="1h">近1小时</button>
+        <button data-r="24h" class="on">近24小时</button>
+        <button data-r="7d">近7天</button>
+        <button data-r="30d">近30天</button>
+      </div>
+      <button class="btn ghost" id="btnRefresh" title="立即刷新">刷新</button>
+      <button class="btn primary" id="btnSettings">设置</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="metrics" id="metrics">
+      <div class="metric"><span class="m-label">访问总量</span><strong id="mTotal">—</strong><span class="m-sub" id="mRate">每分钟 — 次</span></div>
+      <div class="metric"><span class="m-label">境内来源</span><strong id="mCn" class="c-green">—</strong><span class="m-sub" id="mCnSub">占比 —</span></div>
+      <div class="metric"><span class="m-label">境外来源</span><strong id="mOs" class="c-red">—</strong><span class="m-sub" id="mOsSub">占比 —</span></div>
+      <div class="metric"><span class="m-label">扫描 / 异常</span><strong id="mScan" class="c-amber">—</strong><span class="m-sub" id="mScanSub">活跃 IP — 个</span></div>
+    </section>
+
+    <div class="banner" id="complianceBanner">
+      <span class="dot"></span>
+      <span id="bannerText">正在读取数据源状态…</span>
+      <button class="link" id="bannerAction">去设置</button>
+    </div>
+
+    <div class="map-grid">
+      <section class="card map-card">
+        <div class="card-head">
+          <div><h2>境外来源 · 全球视图</h2><p>连线颜色按连接频率由冷到热 · 按国家合并 · 点击圆点打开 IP 来源画像</p></div>
+          <div class="head-right"><span class="tag tag-red">境外</span><span class="legend"><i class="lg-red"></i>访问 <i class="lg-dot"></i>本机</span></div>
+        </div>
+        <div class="map-wrap" id="worldWrap">
+          <div id="worldMap" class="tmap"></div>
+          <canvas id="worldCanvas" class="fallback"></canvas>
+          <div class="map-note" id="worldNote"></div>
+          <div class="map-stat" id="worldStat">—</div>
+          <div class="heat-legend" id="worldHeat"></div>
+        </div>
+      </section>
+      <section class="card map-card">
+        <div class="card-head">
+          <div><h2>境内来源 · 中国视图</h2><p>连线颜色按连接频率由冷到热 · 按省份合并 · 点击圆点打开 IP 来源画像</p></div>
+          <div class="head-right"><span class="tag tag-green">境内</span><span class="legend"><i class="lg-green"></i>访问 <i class="lg-dot"></i>本机</span></div>
+        </div>
+        <div class="map-wrap" id="cnWrap">
+          <div id="cnMap" class="tmap"></div>
+          <canvas id="cnCanvas" class="fallback"></canvas>
+          <div class="map-note" id="cnNote"></div>
+          <div class="map-stat" id="cnStat">—</div>
+          <div class="heat-legend" id="cnHeat"></div>
+        </div>
+      </section>
+    </div>
+
+    <!-- 1.1.2：固定全球视图。境内 + 境外来源统一按国家 / 地区聚合后落在一张世界地图上，
+         去掉境内 / 全球切换与右侧重复排名；统计与排名合并到下方「访问统计与排名」。 -->
+    <section class="card geodist" id="geoCard">
+      <div class="card-head">
+        <div>
+          <h2>全球 IP 来源分布</h2>
+          <p>境内与境外来源统一落在一张世界地图上 · 气泡大小与颜色表示访问次数 · 点击气泡查看该地区来源明细</p>
+        </div>
+        <div class="head-right"><span class="tag tag-blue">全球</span></div>
+      </div>
+      <div class="geo-grid">
+        <div class="geo-map-wrap" id="geoWrap">
+          <div id="geoMap" class="tmap"></div>
+          <canvas id="geoCanvas" class="fallback"></canvas>
+          <div class="geo-legend" id="geoLegend"></div>
+          <div class="map-note" id="geoNote">示意坐标分布 · 不绘制国界与省界，边界以官方地图为准</div>
+          <div class="map-stat" id="geoStat">—</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 1.1.2：图4 双榜界面 + 图3 统计 / 下钻功能，合并到地图正下方。
+         全页只保留这一处排名，消除「地域分布右侧 + 境内榜 + 境外榜」三份重复数据。 -->
+    <section class="card visitrank" id="rankCard">
+      <div class="card-head">
+        <div>
+          <h2>访问统计与排名</h2>
+          <p>访问次数 / 覆盖地区 / 独立 IP 合计 · 境内按省级行政区、境外按国家或地区聚合 · 点击条目下钻该地区来源 IP 明细</p>
+        </div>
+        <span class="tag tag-blue">与地图同口径</span>
+      </div>
+      <div class="geo-sum" id="rankSum"></div>
+      <div class="rank-cols">
+        <div class="rank-col">
+          <div class="rank-col-head"><h3>境内访问排名</h3><span class="tag tag-green">中国</span></div>
+          <div class="rank" id="rankCn"><div class="empty">暂无数据</div></div>
+        </div>
+        <div class="rank-col">
+          <div class="rank-col-head"><h3>境外访问排名</h3><span class="tag tag-red">境外</span></div>
+          <div class="rank" id="rankOs"><div class="empty">暂无数据</div></div>
+        </div>
+      </div>
+      <p class="rank-hint" id="rankTip"></p>
+    </section>
+
+    <!-- 1.1.0：协议构成 + 来路 / 受访页 / 入口页 / 终端设备，全部来自同一份 combined 日志
+         1.1.3：点卡片无缝放大；点卡片内任一条目直接放大并下钻到该条目的来源 IP 明细 -->
+    <div class="web-grid" id="webCards">
+      <section class="card mini-card" data-dim="proto">
+        <div class="card-head"><div><h2>访问协议构成</h2><p>协议与判定拆成两个维度</p></div>
+          <div class="mini-head-right"><span class="tag tag-blue">协议</span><button class="mini-expand" type="button" data-zoom title="放大查看全部条目与来源 IP">⤢</button></div></div>
+        <div class="mini-list" id="protoList"><div class="empty">暂无数据</div></div>
+        <div class="mini-sub" id="protoHint"></div>
+      </section>
+      <section class="card mini-card" data-dim="referer">
+        <div class="card-head"><div><h2>来路</h2><p>按 referer 归一化</p></div>
+          <div class="mini-head-right"><span class="tag tag-green">来源</span><button class="mini-expand" type="button" data-zoom title="放大查看全部条目与来源 IP">⤢</button></div></div>
+        <div class="mini-list" id="refList"><div class="empty">暂无数据</div></div>
+      </section>
+      <section class="card mini-card" data-dim="page">
+        <div class="card-head"><div><h2>受访页</h2><p>按去掉查询串的路径聚合</p></div>
+          <div class="mini-head-right"><span class="tag tag-blue">页面</span><button class="mini-expand" type="button" data-zoom title="放大查看全部条目与来源 IP">⤢</button></div></div>
+        <div class="mini-list" id="pageList"><div class="empty">暂无数据</div></div>
+      </section>
+      <section class="card mini-card" data-dim="entry">
+        <div class="card-head"><div><h2>入口页</h2><p>每个会话首次访问的页面</p></div>
+          <div class="mini-head-right"><span class="tag tag-amber">会话</span><button class="mini-expand" type="button" data-zoom title="放大查看全部条目与来源 IP">⤢</button></div></div>
+        <div class="mini-list" id="entryList"><div class="empty">暂无数据</div></div>
+      </section>
+      <section class="card mini-card" data-dim="device">
+        <div class="card-head"><div><h2>终端设备</h2><p>按 User-Agent 粗略归一</p></div>
+          <div class="mini-head-right"><span class="tag tag-gray">UA</span><button class="mini-expand" type="button" data-zoom title="放大查看全部条目与来源 IP">⤢</button></div></div>
+        <div class="mini-list" id="deviceList"><div class="empty">暂无数据</div></div>
+      </section>
+    </div>
+
+    <div class="row-2">
+      <section class="card">
+        <div class="card-head"><div><h2>实时访问事件</h2><p>最新来源与判定，自动滚动</p></div>
+          <span class="tag tag-blue" id="liveTag">实时</span></div>
+        <div class="live-list" id="liveList"><div class="empty">等待数据…</div></div>
+      </section>
+      <section class="card">
+        <div class="card-head"><div><h2>访问频率与趋势</h2><p id="trendSub">按时间桶聚合</p></div>
+          <div class="legend-btns" id="trendLegend">
+            <button data-k="all" class="on">总量</button><button data-k="cn">境内</button>
+            <button data-k="overseas">境外</button><button data-k="scan">扫描</button>
+          </div></div>
+        <div class="chart-wrap"><svg id="trendSvg" viewBox="0 0 720 240" preserveAspectRatio="none"></svg>
+          <div id="chartTip" class="chart-tip"></div></div>
+      </section>
+    </div>
+
+    <section class="card records">
+      <div class="card-head">
+        <div><h2>IP 来源记录</h2><p>点击任意一行查看该 IP 的完整画像</p></div>
+        <div class="filters">
+          <select id="fScope"><option value="">全部范围</option><option value="cn">境内</option><option value="overseas">境外</option><option value="private">内网</option><option value="lan">局域网设备</option></select>
+          <select id="fVerdict"><option value="">全部判定</option><option value="normal">正常访问</option><option value="scan">扫描探测</option><option value="attack">认证攻击</option><option value="knock">端口敲门</option></select>
+          <select id="fProto"><option value="">全部协议</option><option value="https">HTTPS</option><option value="http">HTTP</option><option value="web">Web 未识别</option><option value="ssh">SSH</option><option value="tcp">TCP</option><option value="udp">UDP</option><option value="icmp">ICMP</option></select>
+          <select id="fSource"><option value="">全部来源</option><option value="local_auth">本机 SSH</option><option value="local_web">本机 Web</option><option value="fnos_audit">fnOS 审计</option><option value="router_syslog">路由器 syslog</option><option value="router_file">路由器文件</option><option value="knock">端口敲门</option><option value="knock_app">敲门网关</option></select>
+          <input id="fQuery" type="search" placeholder="搜索 IP / 归属 / 路径">
+          <button class="btn ghost" id="btnExport">导出 CSV</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>时间</th><th>来源</th><th>IP 地址</th><th>归属地</th><th>范围</th><th>协议</th><th>端口</th><th>判定</th><th>动作 / 路径</th></tr></thead>
+          <tbody id="recBody"><tr><td colspan="9" class="empty">加载中…</td></tr></tbody>
+        </table>
+      </div>
+      <div class="pager"><span id="recTotal">共 0 条</span><div><button class="btn ghost" id="btnPrev">上一页</button><span id="recPage">1 / 1</span><button class="btn ghost" id="btnNext">下一页</button></div></div>
+    </section>
+  </main>
+
+  <footer>
+    <span id="footMap">IP 动态感知 · 离线归属库 ip2region · 底图服务：—</span>
+    <span id="footInfo">数据源：本机日志 / fnOS 结构化审计 / SSH 轮转日志 / 路由器日志 / 端口敲门 · 归属：本地离线库 + 3 家在线源交叉校验 · 协议 / 来路 / 受访页 / 入口页来自 Nginx combined 日志 · 1.1.14 可在设置里接入敲门网关请求日志（只读 fn-knock-lite 按天分片的 JSON），把软件汇总日志保存到飞牛文件夹交给 AI 做防护分析；点开保存位置会在应用窗口内弹出飞牛原生卡片</span>
+  </footer>
+</div>
+
+<div class="mask" id="mask"></div>
+<!-- 1.1.3：五卡无缝放大面板。独立的遮罩与层，避免与 IP 画像抽屉抢同一套开关 -->
+<div class="zoom-mask" id="zoomMask"></div>
+<section class="card zoom-card" id="cardZoom" aria-hidden="true">
+  <div class="zoom-head">
+    <div><h2 id="zoomTitle">—</h2><p id="zoomSub">点击卡片放大，选择条目查看详细信息</p></div>
+    <div class="zoom-head-right"><span class="tag tag-blue" id="zoomTag">—</span>
+      <button class="icon-btn" id="zoomClose" type="button" title="收起">✕</button></div>
+  </div>
+  <div class="zoom-body" id="zoomBody">
+    <div class="zoom-list-wrap">
+      <div class="zoom-list-head"><span>全部条目</span><span id="zoomCount">—</span></div>
+      <div class="zoom-list" id="zoomList"></div>
+    </div>
+    <div class="zoom-detail" id="zoomDetail"><div class="empty">点击左侧任意条目，查看该条目的详细信息与来源 IP</div></div>
+  </div>
+</section>
+<aside class="drawer" id="settingsDrawer"><div class="drawer-head"><h2>设置</h2><button class="icon-btn" data-close>✕</button></div><div class="drawer-body" id="settingsBody"></div></aside>
+<aside class="drawer" id="detailDrawer"><div class="drawer-head"><h2 id="detailTitle">IP 来源画像</h2><button class="icon-btn" data-close>✕</button></div><div class="drawer-body" id="detailBody"></div></aside>
+<div id="toast" class="toast"></div>
+
+<script>/*__JS__*/</script>
+</body>
+</html>

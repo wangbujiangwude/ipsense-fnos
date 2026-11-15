@@ -1,0 +1,12 @@
+#!/bin/bash
+# 升级前：停旧版，防止新旧进程抢同一个 app.sock
+set -u
+APP_DEST="${TRIM_APPDEST:-/var/apps/ipsense/target}"
+GW="$APP_DEST/server/gateway.py"
+PY=""
+for c in python3 /usr/bin/python3 /usr/local/bin/python3 python; do
+    if command -v "$c" >/dev/null 2>&1; then PY=$(command -v "$c"); break; fi
+done
+[ -z "$PY" ] && PY=python3
+[ -f "$GW" ] && "$PY" "$GW" stop
+exit 0

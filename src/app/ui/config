@@ -1,0 +1,13 @@
+{
+  ".url": {
+    "ipsense.Application": {
+      "title": "IP 动态感知",
+      "icon": "images/icon_{0}.png",
+      "type": "iframe",
+      "gatewayPrefix": "/app/ipsense",
+      "gatewaySocket": "app.sock",
+      "url": "/app/ipsense/",
+      "allUsers": true
+    }
+  }
+}

@@ -1,0 +1,56 @@
+#!/bin/bash
+# fnOS 应用生命周期入口：cmd/main <action>
+# 环境变量 TRIM_APPDEST（应用目录）、TRIM_PKGVAR（数据目录）由 fnOS 注入
+set -u
+APP_DEST="${TRIM_APPDEST:-/var/apps/ipsense/target}"
+VAR_DIR="${TRIM_PKGVAR:-/vol1/@appdata/ipsense}"
+GW="$APP_DEST/server/gateway.py"
+LOG="$VAR_DIR/cmd.log"
+mkdir -p "$VAR_DIR" 2>/dev/null
+log(){ echo "[$(date '+%F %T')] main $*" >> "$LOG" 2>/dev/null; }
+log "action=${1:-status}"
+
+PY=""
+for c in python3 /usr/bin/python3 /usr/local/bin/python3 python; do
+    if command -v "$c" >/dev/null 2>&1; then PY=$(command -v "$c"); break; fi
+done
+[ -z "$PY" ] && PY=python3
+
+if [ ! -f "$GW" ]; then
+    log "gateway.py 不存在: $GW"
+    echo "[ipsense] gateway.py 不存在: $GW" >&2
+    exit 1
+fi
+
+case "${1:-status}" in
+    start|stop|restart)
+        "$PY" "$GW" "$1" 2>&1 | tee -a "$LOG"
+        ;;
+    status|hastart)
+        # hastart 是开机自启探测。若残留陈旧 socket 而进程已死，
+        # 直接返回 running 会导致应用显示 running 却打不开页面 —— 这里自愈拉起。
+        if "$PY" "$GW" status >/dev/null 2>&1; then
+            exit 0
+        fi
+        if [ "${1:-status}" = "hastart" ]; then
+            log "hastart 检测到未运行，自动拉起"
+            "$PY" "$GW" start 2>&1 | tee -a "$LOG"
+            exit ${PIPESTATUS[0]}
+        fi
+        exit 1
+        ;;
+    install)
+        "$PY" "$GW" start 2>&1 | tee -a "$LOG"
+        ;;
+    uninstall)
+        "$PY" "$GW" stop 2>&1 | tee -a "$LOG"
+        ;;
+    upgrade)
+        "$PY" "$GW" restart 2>&1 | tee -a "$LOG"
+        ;;
+    *)
+        echo "用法: cmd/main {start|stop|restart|status|hastart|install|uninstall|upgrade}" >&2
+        exit 2
+        ;;
+esac
+exit 0

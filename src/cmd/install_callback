@@ -1,0 +1,22 @@
+#!/bin/bash
+# 安装后：创建数据目录、写默认配置并启动服务
+set -u
+APP_DEST="${TRIM_APPDEST:-/var/apps/ipsense/target}"
+VAR_DIR="${TRIM_PKGVAR:-/vol1/@appdata/ipsense}"
+GW="$APP_DEST/server/gateway.py"
+LOG="$VAR_DIR/cmd.log"
+mkdir -p "$VAR_DIR" "$VAR_DIR/inbox" 2>/dev/null
+chmod 755 "$VAR_DIR" "$VAR_DIR/inbox" 2>/dev/null
+log(){ echo "[$(date '+%F %T')] install_callback: $*" >> "$LOG" 2>/dev/null; }
+PY=""
+for c in python3 /usr/bin/python3 /usr/local/bin/python3 python; do
+    if command -v "$c" >/dev/null 2>&1; then PY=$(command -v "$c"); break; fi
+done
+[ -z "$PY" ] && PY=python3
+if [ ! -f "$GW" ]; then
+    log "gateway.py 缺失: $GW"
+    exit 0
+fi
+log "启动服务 (python=$PY)"
+"$PY" "$GW" start >> "$LOG" 2>&1 || log "start 返回非零，可能稍后由应用中心拉起"
+exit 0

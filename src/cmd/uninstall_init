@@ -1,0 +1,13 @@
+#!/bin/bash
+# 卸载前：先停服务，避免抢占 socket 与遗留进程
+set -u
+APP_DEST="${TRIM_APPDEST:-/var/apps/ipsense/target}"
+VAR_DIR="${TRIM_PKGVAR:-/vol1/@appdata/ipsense}"
+GW="$APP_DEST/server/gateway.py"
+PY=""
+for c in python3 /usr/bin/python3 /usr/local/bin/python3 python; do
+    if command -v "$c" >/dev/null 2>&1; then PY=$(command -v "$c"); break; fi
+done
+[ -z "$PY" ] && PY=python3
+[ -f "$GW" ] && "$PY" "$GW" stop
+exit 0

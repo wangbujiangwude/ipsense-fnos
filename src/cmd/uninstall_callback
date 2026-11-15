@@ -1,0 +1,8 @@
+#!/bin/bash
+# 卸载后：清理 pid / socket / 临时文件；保留数据库与配置，避免误删用户历史记录
+set -u
+APP_DEST="${TRIM_APPDEST:-/var/apps/ipsense/target}"
+VAR_DIR="${TRIM_PKGVAR:-/vol1/@appdata/ipsense}"
+rm -f "$APP_DEST/app.sock" "$VAR_DIR/ipsense.pid" "$VAR_DIR/config.json.tmp" 2>/dev/null
+echo "[ipsense] 卸载完成；历史数据保留在 $VAR_DIR，如需彻底清理请手动删除该目录" 2>/dev/null
+exit 0

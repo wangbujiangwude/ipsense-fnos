@@ -1,0 +1,38 @@
+IP 动态感知 (ipsense) · 许可说明
+
+一、本项目原创代码（server/、ui/、cmd/、tools/）
+以 MIT License 发布：
+
+Copyright (c) 2026 laowang
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+二、第三方数据：ip2region_v4.xdb
+文件来源：https://github.com/lionsoul2014/ip2region （data/ip2region_v4.xdb）
+本项目仅随包分发其 IPv4 离线数据文件，用于本地 IP 归属地查询，不修改其内容。
+数据及查询格式遵循 ip2region 项目原始许可证，权利归原作者所有。
+应用运行时不联网查询该数据，也不会上传任何访问日志。
+
+三、地图服务
+应用不内置任何地图服务密钥。合规底图由腾讯位置服务（腾讯地图 GL JS）提供，
+需使用者自行申请 key 并遵守其服务条款；未配置 key 时前端只绘制坐标散点示意，
+不绘制国界、海岸线或行政区划边界。
+
+四、其他
+应用展示的 IP、归属地、日志路径等信息属于使用者本机数据，由使用者自行保管。

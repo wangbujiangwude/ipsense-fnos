@@ -1,0 +1,30 @@
+# ----------------------------------------------------------------
+# 本地开发 / 调试 / 大体积产物：不纳入版本库
+# 仓库只发布 src / docs / tools / release 四部分
+# ----------------------------------------------------------------
+animation/
+article/
+backup/
+build/
+src/app.tgz
+_excluded_local/
+
+# 临时文件与缓存
+.tmp/
+__pycache__/
+*.py[cod]
+*.log
+*.err
+*.tmp
+*.bundle
+*.zip
+.DS_Store
+Thumbs.db
+
+# 凭据与调试探针（双保险，避免误入暂存区）
+*cred*.txt
+*token*.txt
+*_probe.py
+probe_*.py
+_shot_*.png
+_proxy_tunnel.py
