@@ -262,7 +262,8 @@ class GeoResolver(object):
         return r
 
     def _empty(self, ip):
-        return {"ip": ip, "country": "", "province": "", "city": "", "isp": "",
+        return {"ip": ip, "country": "", "province": "", "city": "",
+                "district": "", "isp": "",
                 "scope": "private" if is_private(ip) else "unknown",
                 "label": "内网地址" if is_private(ip) else "未知归属",
                 "lat": None, "lng": None, "ipver": 6 if ":" in ip else 4}
@@ -270,7 +271,7 @@ class GeoResolver(object):
     def _lookup_uncached(self, ip):
         if is_private(ip):
             return self._empty(ip)
-        country = province = city = isp = ""
+        country = province = city = district = isp = ""
         if ":" in ip:
             low = ip.lower()
             for pre, cn, carrier in CN_V6_PREFIX:
@@ -282,20 +283,23 @@ class GeoResolver(object):
             # IPv6 仅做国家级粗判，不再把 province 写成「中国」污染省份排名
             lat, lng = COUNTRY_COORDS["中国"] if country == "中国" else (20.0, 0.0)
             return {"ip": ip, "country": country, "province": "", "city": "",
-                    "isp": isp, "scope": "cn" if country == "中国" else "overseas",
+                    "district": "", "isp": isp,
+                    "scope": "cn" if country == "中国" else "overseas",
                     "label": ("中国·" + isp) if (country == "中国" and isp) else "境外·IPv6",
                     "lat": lat, "lng": lng, "ipver": 6}
         raw = self.searcher.search_raw(ip) if self.searcher else None
         iso = ""
         if raw:
             parts = raw.split("|")
-            parts += [""] * (5 - len(parts))
-            # 国家 | 省/州 | 城市 | 运营商或机构 | ISO 国家码
+            parts += [""] * (6 - len(parts))
+            # 国家 | 省/州 | 城市 | 运营商或机构 | ISO 国家码 | 区县(可选)
+            # 1.1.15：部分离线库带第 6 段区县；没有就留空，绝不猜测。
             country = self._clean(parts[0])
             province = self._clean(parts[1])
             city = self._clean(parts[2])
             isp = self._clean(parts[3])
             iso = self._clean(parts[4]).upper()
+            district = self._clean(parts[5])
             if iso in ISO_TO_CN:
                 country = ISO_TO_CN[iso]
         country = _CN_ALIAS.get(country, country)
@@ -317,14 +321,16 @@ class GeoResolver(object):
             h = int(hashlib.md5(ip.encode()).hexdigest()[:6], 16)
             lat += ((h % 100) / 100.0 - 0.5) * 1.2
             lng += (((h // 100) % 100) / 100.0 - 0.5) * 1.6
-            label = "·".join([x for x in ("中国", province, city) if x])
+            label = "·".join([x for x in ("中国", province, city, district) if x])
         else:
             scope = "overseas"
             lat, lng = COUNTRY_COORDS.get(country, (20.0, 0.0))
             h = int(hashlib.md5(ip.encode()).hexdigest()[:6], 16)
             lat += ((h % 100) / 100.0 - 0.5) * 3.0
             lng += (((h // 100) % 100) / 100.0 - 0.5) * 4.0
-            label = "·".join([x for x in (country or "境外", province, city) if x])
+            label = "·".join([x for x in (country or "境外", province, city,
+                                         district) if x])
         return {"ip": ip, "country": country or "未知", "province": province,
-                "city": city, "isp": isp, "scope": scope, "label": label,
+                "city": city, "district": district, "isp": isp,
+                "scope": scope, "label": label,
                 "lat": round(lat, 4), "lng": round(lng, 4), "ipver": 4}

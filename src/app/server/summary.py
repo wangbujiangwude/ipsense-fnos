@@ -145,8 +145,18 @@ def _table(head, rows):
 
 
 def _geo(r):
-    return " / ".join(str(x) for x in (r.get("country"), r.get("province"),
-                                       r.get("city"), r.get("isp"))
+    # 1.1.15：区级信息（安徽省 / 合肥市 / 蜀山区）有就展示，没有不猜。
+    # 汇总里既有 sqlite3.Row（无 .get）也有 dict，两种都要兼容。
+    def g(k):
+        try:
+            return r.get(k)
+        except AttributeError:
+            try:
+                return r[k]
+            except (KeyError, IndexError):
+                return ""
+    return " / ".join(str(x) for x in (g("country"), g("province"),
+                                       g("city"), g("district"), g("isp"))
                       if x and str(x) != "0") or "未知"
 
 
@@ -236,14 +246,13 @@ def build_summary(app, rng="24h", top_ips=20, top_events=30):
                 "SELECT ip, COUNT(*) n, MAX(ts) last_ts, "
                 "SUM(CASE WHEN verdict IN ('scan','attack','knock') THEN 1 ELSE 0 END) bad, "
                 "MAX(country) country, MAX(province) province, MAX(city) city, "
+                "MAX(district) district, "
                 "MAX(scope) scope, MAX(port) port, MAX(proto) proto, MAX(verdict) verdict "
                 "FROM events WHERE ts>=? GROUP BY ip ORDER BY n DESC LIMIT ?",
                 (start, top_ips)).fetchall()
         out = []
         for r in rows:
-            out.append([r["ip"],
-                        " / ".join(str(x) for x in (r["country"], r["province"], r["city"])
-                                  if x and str(x) != "0") or "未知",
+            out.append([r["ip"], _geo(r),
                         SCOPE_NAME.get(r["scope"], r["scope"] or "未知"),
                         r["n"], r["bad"] or 0,
                         PROTO_NAME.get(r["proto"], r["proto"] or "未识别"),
@@ -274,7 +283,8 @@ def build_summary(app, rng="24h", top_ips=20, top_events=30):
         for r in hits:
             out.append([_ts(r.get("ts")), r.get("ip"),
                         " / ".join(str(x) for x in (r.get("country"), r.get("province"),
-                                                    r.get("city")) if x and str(x) != "0") or "未知",
+                                                    r.get("city"), r.get("district"))
+                                  if x and str(x) != "0") or "未知",
                         VERDICT_NAME.get(r.get("verdict"), r.get("verdict") or "—"),
                         PROTO_NAME.get(r.get("proto"), r.get("proto") or "未识别"),
                         r.get("port") or "—",
@@ -299,7 +309,7 @@ def build_summary(app, rng="24h", top_ips=20, top_events=30):
         with st.lock:
             rows = st.conn.execute(
                 "SELECT ts, ip, action, path, proto, status, port, "
-                "country, province, city FROM events "
+                "country, province, city, district FROM events "
                 "WHERE ts>=? AND source='knock_app' ORDER BY ts DESC LIMIT ?",
                 (st._range(rng)[0], top_events)).fetchall()
             kinds = st.conn.execute(

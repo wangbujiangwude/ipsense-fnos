@@ -23,9 +23,9 @@
 
 | 文件 | 适用 |
 |---|---|
-| `ipsense_1.1.14_all.fpk` | 通用包，x86 / ARM64 均可 |
-| `ipsense_1.1.14_x86.fpk` | x86_64 设备 |
-| `ipsense_1.1.14_arm.fpk` | ARM64 设备 |
+| `ipsense_1.1.15_all.fpk` | 通用包，x86 / ARM64 均可 |
+| `ipsense_1.1.15_x86.fpk` | x86_64 设备 |
+| `ipsense_1.1.15_arm.fpk` | ARM64 设备 |
 
 三个包内容一致，选与设备架构对应的即可。装完打开就能看：默认开启本机日志、路由器日志与 fnOS 审计三路，其余数据源在设置里按需开启。地图密钥需自行申请，未配置时前端只画坐标散点示意。
 
@@ -34,10 +34,19 @@
 - [README（详版功能与技术说明）](docs/README.md)
 - [使用说明](docs/使用说明.md)
 - [更新日志](docs/CHANGELOG.md)
+- [排障指南：日志位置、诊断 6 件套、运行日志一键导出](docs/排障指南.md)
+
+## 出问题了怎么反馈
+
+先在应用里点「设置 → 最底部 → 运行日志一键导出」，得到一份已脱敏的 `.txt`；应用打不开时改用
+`sh tools/diag_bundle.sh`，会生成 `ipsense-diag-*.tar.gz`。两者都自动抹除地图 KEY、令牌、口令与完整来访 IP，
+**请不要直接把 `config.json` 或 `events.db` 贴到 Issue 里**。
+
+完整流程与「诊断 6 件套」见 [排障指南](docs/排障指南.md)，提交时选仓库的「问题反馈（BUG）」模板逐项填完。
 
 ## 构建与自检
 
-`tools/build_fpk.sh` 从 `src/` 打包 FPK，`tools/build_multiarch.py` 派生 x86 / arm 分架构包；`tools/selftest.py` 是离线自检脚本。
+`tools/build_fpk.sh` 从 `src/` 打包 FPK，`tools/build_multiarch.py` 派生 x86 / arm 分架构包。`tools/selftest.py` 是离线全量自检（当前 636 项），另有四个专项工具：`tools/check_115_geometry.mjs` 校验地图弧线几何、`tools/smoke_115_store.py` 校验后端聚合与区级字段、`tools/verify_115_preview.py` 在真实 Chrome 里点验离线预览页、`tools/verify_115_fpk.py` 解包核对三个 FPK 的版本 / 校验和 / 内容一致性。
 
 ## 许可
 

@@ -119,9 +119,11 @@
   }
 
   // ---- 全局状态 ----
-  function emptyArcs() { return { list: [], merged: 0, skipped: 0, near: 0, nearPts: [] }; }
+  function emptyArcs() {
+    return { list: [], merged: 0, skipped: 0, near: 0, nearPts: [], cross: 0 };
+  }
   var S = {
-    range: '24h', page: 1, size: 20, trendKey: 'all',
+    range: '24h', page: 1, size: 20, trendKey: 'all', liveScope: '',
     lastId: 0, hotspots: [], home: { lat: 22.5431, lng: 114.0579, label: '本机' },
     mapConfigured: false, cfg: {}, mapProvider: 'tencent', tmapReady: false, tmapTried: false,
     mapKeysDraft: null, mapCustom: null, selProvider: 'tencent',
@@ -133,7 +135,7 @@
     mapRaf: 0, mapForce: false, geoCache: {}, redraws: 0, lastDrawMs: 0,
     // 圆点交互：TMap geometry id → 聚合点；canvas 每帧的命中点缓存
     markIndex: { world: {}, cn: {} }, hit: { world: [], cn: [] },
-    arcDrawn: 0, arcMerged: 0, arcSkipped: 0, arcNear: 0, bg: {},
+    arcDrawn: 0, arcMerged: 0, arcSkipped: 0, arcNear: 0, arcCross: 0, bg: {},
     heavySig: '', lightSig: '', geoVerify: null, mapScroll: true,
     // 1.1.7：逐接口健康状态。bad 记本轮失败的接口名，fails 记「整轮全失败」的
     // 连续次数，只有连续两轮全失败才允许标红「连接失败」，避免一次抖动误报。
@@ -244,9 +246,22 @@
   function renderLive(list) {
     S.live = list || [];
     var box = $('liveList');
-    if (!S.live.length) { box.innerHTML = '<div class="empty">暂无实时事件</div>'; return; }
-    var rows = S.live.slice(-30).reverse().map(function (e) {
-      var loc = [e.country, e.province, e.city].filter(function (x) { return x && x !== '0'; }).join(' · ') || '未知归属';
+    // 1.1.15：监控范围筛选只作用于这块实时列表，不影响记录表与地图。
+    // 后端事件流仍全量推送，按 e.scope 在前端过滤，切换范围无需重新请求。
+    var rowsData = S.live.filter(function (e) {
+      return !S.liveScope || e.scope === S.liveScope;
+    });
+    var tag = $('liveTag');
+    if (tag) tag.textContent = (S.liveScope ? SCOPE_NAME[S.liveScope] + ' · ' : '实时 · ') +
+      num(rowsData.length) + ' 条';
+    if (!rowsData.length) {
+      box.innerHTML = '<div class="empty">' +
+        (S.live.length ? '当前监控范围内暂无实时事件' : '暂无实时事件') + '</div>';
+      return;
+    }
+    var rows = rowsData.slice(-30).reverse().map(function (e) {
+      var loc = [e.country, e.province, e.city, e.district]
+        .filter(function (x) { return x && x !== '0'; }).join(' · ') || '未知归属';
       return '<div class="live-item">' +
         '<span class="badge ' + esc(e.scope) + '">' + esc(SCOPE_NAME[e.scope] || '未知') + '</span>' +
         '<span class="ip">' + esc(e.ip) + '</span>' +
@@ -534,7 +549,7 @@
     h += '<h3 class="zd-h">来源 IP 明细（' + ips.length +
       ' 个 · 点击任意一行查看该 IP 的完整来源画像）</h3>';
     h += ips.length ? '<div class="zoom-ips">' + ips.map(function (x) {
-      var loc = [x.country, x.province, x.city].filter(function (v) {
+      var loc = [x.country, x.province, x.city, x.district].filter(function (v) {
         return v && v !== '0';
       }).join(' · ') || '—';
       return '<div class="zoom-ip" data-ip="' + esc(x.ip) + '"' +
@@ -594,12 +609,13 @@
     // 1.1.2：三个统计卡与双榜合并到地图下方，全页只有这一处排名
     $('rankSum').innerHTML =
       '<div><b>' + num(total) + '</b><span>访问次数</span></div>' +
-      '<div><b>' + num(rs.length) + '</b><span>国家 / 地区</span></div>' +
+      '<div><b>' + num(rs.length) + '</b><span>国家 / 地区 · 省份</span></div>' +
       '<div><b>' + num(ips) + '</b><span>独立 IP 合计</span></div>';
-    $('geoStat').textContent = rs.length + ' 个国家 / 地区 · ' + num(total) +
+    $('geoStat').textContent = rs.length + ' 个国家 / 地区 · 省份 · ' + num(total) +
       ' 次访问 · 点击气泡查看详情';
     $('rankTip').textContent = '统计与地图同为当前时间范围的境内 + 境外全部来源；' +
-      '气泡按内置国家 / 地区中心点绘制，只表达数量，不代表行政边界，' +
+      '1.1.15 起境内按省细分、境外按国家 / 地区细分，同省访问不再被合并成一个「中国」气泡；' +
+      '气泡按内置中心点绘制，只表达数量，不代表行政边界，' +
       '中国香港 / 中国澳门 / 中国台湾均计入中国。点击排名条目或气泡可下钻该地区的来源 IP 明细。';
     renderGeoLegend();
     drawGeo();
@@ -675,7 +691,8 @@
         ctx.fillStyle = '#e8f0fb';
         ctx.fillText(text, lx, ly);
       }
-      picks.push({ x: p[0], y: p[1], r: rad + 4, name: r.name });
+      picks.push({ x: p[0], y: p[1], r: rad + 4, name: r.name,
+                   scope: r.scope || 'all' });
     });
     S.geoHits = picks;
     $('geoNote').textContent = '示意坐标分布 · 不绘制国界与省界，边界以官方地图为准';
@@ -714,9 +731,22 @@
   }
 
   // 地域下钻：复用 1.0.7 的「整组 IP 来源画像」抽屉，字段与地图圆点完全一致
+  // 1.1.15：省份名短后缀归一（「安徽」≡「安徽省」），保证按省合并后的
+  // 气泡下钻不会漏掉库里用短名保存的那些 IP。
+  function canonRegion(s) {
+    return String(s || '')
+      .replace(/(省|市|自治区|特别行政区)$/, '')
+      .replace(/(壮族|回族|维吾尔)$/, '');
+  }
   function openRegionProfile(name, scope) {
+    // 1.1.15：全球分布图境内按省、境外按国家细分，气泡自带 r.scope。
+    // 旧逻辑把所有气泡都按 country 匹配，境内省份气泡永远匹配不到热点，
+    // 点开就是「没有可展开的 IP」——这正是同省来源看起来不显示的一环。
     var hs = (S.hotspots || []).filter(function (h) {
-      return String(scope === 'cn' ? (h.province || '') : (h.country || '')) === name;
+      if (scope === 'cn') return canonRegion(h.province) === canonRegion(name);
+      if (scope === 'overseas') return String(h.country || '') === name;
+      return canonRegion(h.province) === canonRegion(name) ||
+             String(h.country || '') === name;
     });
     if (!hs.length) {
       toast('该地区在当前热点列表中没有可展开的 IP');
@@ -724,8 +754,9 @@
     }
     var members = hs.map(function (h) {
       return { ip: h.ip, n: h.n, last_ts: h.last_ts, verdict: h.verdict,
-               city: h.city || '', isp: h.isp || '', province: h.province || '',
-               country: h.country || '', lat: h.lat, lng: h.lng, scope: scope };
+               city: h.city || '', district: h.district || '', isp: h.isp || '',
+               province: h.province || '', country: h.country || '',
+               lat: h.lat, lng: h.lng, scope: scope };
     });
     if (members.length === 1) {
       openDetail(members[0].ip, {
@@ -752,7 +783,7 @@
       body.innerHTML = '<tr><td colspan="9" class="empty">没有匹配的记录</td></tr>';
     } else {
       body.innerHTML = data.rows.map(function (r) {
-        var loc = [r.country, r.province, r.city].filter(function (x) { return x && x !== '0'; }).join(' · ') || '—';
+        var loc = [r.country, r.province, r.city, r.district].filter(function (x) { return x && x !== '0'; }).join(' · ') || '—';
         var act = r.path ? esc(r.path) : esc(r.action);
         return '<tr data-ip="' + esc(r.ip) + '">' +
           '<td>' + tm(r.ts) + '</td>' +
@@ -847,6 +878,11 @@
   }
   function mapSdkUrl(p, key, cb) {
     var u = String(p.sdk || '');
+    // 1.1.15：旧版本 / 手填配置里可能残留写错点号的高德域名，
+    // 报出来就是「请确认能访问 webapiamap.com」这种并不存在的地址。
+    // 这里统一纠正为官方域名，诊断里也会标注「已自动纠正旧域名」。
+    u = u.replace(/webapiamap\.com/gi, 'webapi.amap.com')
+         .replace(/webapi\.amap\.com\.cn/gi, 'webapi.amap.com');
     u = u.replace(/\{key\}/g, encodeURIComponent(key || ''))
          .replace(/\{callback\}/g, cb || '');
     return u.replace(/([?&])callback=&/, '$1').replace(/[?&]callback=$/, '');
@@ -1116,12 +1152,31 @@
              MultiMarker: MultiMarker, PolylineStyle: PolylineStyle, MarkerStyle: MarkerStyle };
   }
 
-  function pollMapReady(eng, done, fail) {
+  // 1.1.15：按服务商给出可执行的失败原因。高德 KEY 无效 / 未绑定 Web 端 /
+  // 白名单不含本站时，服务端返回的是 text/plain 的 console.log 文本而不是 JS，
+  // 浏览器触发 script.onerror 或「AMap 未创建」；旧文案只说「请确认能访问域名」，
+  // 用户会误以为是网络问题，反复换 KEY 也定位不到。
+  function sdkFailHint(p, kind) {
+    var host = urlHost(mapSdkUrl(p, providerKey(p.id), 'x'));
+    if (p.engine === 'amap') {
+      return kind === 'net'
+        ? '高德 SDK 加载失败（' + host + '）：请确认能访问 webapi.amap.com，' +
+          '并检查浏览器扩展 / 路由器是否拦截了该域名。'
+        : '高德 SDK 未就绪：KEY 无效、未绑定「Web 端 (JS API)」、' +
+          '域名白名单不含本站，或未配置安全密钥 jscode，都会让服务端返回纯文本而不创建 AMap。' +
+          '请到高德控制台核对以上四项后重试（正确域名为 ' + host + '）。';
+    }
+    return kind === 'net'
+      ? 'SDK 加载失败：请确认能访问 ' + host
+      : 'SDK 已下载但未就绪：请检查 KEY 与域名 / Referer 白名单，' +
+        '或确认浏览器扩展没有拦截 ' + host;
+  }
+  function pollMapReady(p, eng, done, fail) {
     var tries = 0;
     (function wait() {
       if (eng.ready()) { done(); return; }
       if (tries++ < 40) { setTimeout(wait, 100); return; }
-      fail('SDK 已下载但未就绪，可能被浏览器扩展拦截');
+      fail(sdkFailHint(p, 'ready'));
     })();
   }
   function loadMapScript(url, onload, onerror) {
@@ -1134,17 +1189,17 @@
   function loadMapSdk(p, key, done, fail) {
     var eng = mapEngineOf(p), cb = '__ipsenseMapReady__';
     var url = mapSdkUrl(p, key, cb), fired = false;
-    function once() { if (fired) return; fired = true; pollMapReady(eng, done, fail); }
+    function once() { if (fired) return; fired = true; pollMapReady(p, eng, done, fail); }
     if (eng.ready()) { done(); return; }
     setMapState('loading');
     if (p.engine === 'bmapgl') window[cb] = once;
     loadMapScript(url, function () {
       if (p.engine === 'bmapgl') setTimeout(once, 60);
       else once();
-    }, function () { fail('SDK 加载失败：请确认能访问 ' + urlHost(url)); });
+    }, function () { fail(sdkFailHint(p, 'net')); });
     setTimeout(function () {
       if (!S.tmapReady && S.tmapState === 'loading') {
-        fail('加载超时：请检查网络、密钥与域名 / Referer 白名单');
+        fail(sdkFailHint(p, 'ready'));
       }
     }, 12000);
   }
@@ -1199,6 +1254,9 @@
     var bend = Math.max(0.04, Math.min(0.28, S.arcBend));
     var cap = scope === 'overseas' ? 20 : 3.5;
     var h = Math.min(cap, d.dist * bend * (scope === 'overseas' ? 1.35 : 1));
+    // 1.1.15：同省 / 同城短弧给一个很小的可见弧度，让它从底图上读得出来；
+    // 但不给超短弧设硬下限（1.0.4 的 1.2° 下限会让短线鼓出比自身还大的回环）。
+    if (d.dist > 0.6 && h < 0.12) h = 0.12;
     var nx = -d.vy / d.dist, ny = d.vx / d.dist;
     // 1.0.12：三次贝塞尔。两个控制点沿连线方向分布、再叠加法向偏移，
     // 端点切线贴合 A→B 方向，中段圆润饱满，比单控制点的二次曲线顺滑。
@@ -1212,7 +1270,10 @@
       c2: { lat: from.lat + dLat * 2 / 3 + ny * off,
             lng: from.lng + dLng * 2 / 3 + nx * off / d.k },
       // 采样点按距离自适应：长弧最多 64 段，折线逼近光滑曲线，消除肉眼可见折角
-      n: Math.max(24, Math.min(64, Math.round(d.dist * 1.5) + 24))
+      // 1.1.15：跨 ±180° 的长弧加密采样（64 → 96），折线更贴曲线，
+      // 减少 SDK 上长直线段被误看成「断了一截」的情况。
+      n: Math.max(24, Math.min(d.dist > 90 ? 96 : 64,
+                               Math.round(d.dist * 1.5) + 24))
     };
   }
   function bezierAt(g, t) {
@@ -1221,30 +1282,54 @@
     return { lat: a * g.from.lat + b * g.c1.lat + c * g.c2.lat + d * g.to.lat,
              lng: a * g.from.lng + b * g.c1.lng + c * g.c2.lng + d * g.to.lng };
   }
-  function wrapSegs(pts) {
-    // 经度跨 ±180° 时切成两段，避免拉出一条横穿地图的直线
+  function wrapSegs(pts, base) {
+    // 经度跨 ±180° 时切成两段，避免拉出一条横穿地图的直线。
+    // 1.1.15：新增 base —— 把点归一化到 [base-180, base+180] 这个「世界副本」，
+    // 于是同一条曲线可以在 -360 / 0 / +360 三个窗口各生成一份完整折线。
+    base = base || 0;
     var segs = [], cur = [], i, p, lng, q, prev, edge;
     for (i = 0; i < pts.length; i++) {
       p = pts[i]; lng = p.lng;
-      while (lng > 180) lng -= 360;
-      while (lng < -180) lng += 360;
+      while (lng - base > 180) lng -= 360;
+      while (lng - base < -180) lng += 360;
       q = { lat: p.lat, lng: lng };
       if (cur.length && Math.abs(q.lng - cur[cur.length - 1].lng) > 180) {
         prev = cur[cur.length - 1];
-        edge = prev.lng > 0 ? 180 : -180;
+        edge = prev.lng > base ? base + 180 : base - 180;
         cur.push({ lat: (prev.lat + q.lat) / 2, lng: edge });
         segs.push(cur);
-        cur = [{ lat: (prev.lat + q.lat) / 2, lng: -edge }, q];
+        cur = [{ lat: (prev.lat + q.lat) / 2,
+                 lng: (edge > base ? base - 180 : base + 180) }, q];
       } else cur.push(q);
     }
     if (cur.length > 1) segs.push(cur);
     return segs;
   }
+  function worldSegs(pts) {
+    // 1.1.15 修复「境外全球视图长弧线中断」——SDK 底图侧：
+    // SDK 只渲染一个 360° 窗口，跨日期变更线的长弧被切两半后通常只有一半
+    // 落在视野里，看起来就是线画到一半断了。这里给跨 seam 的长弧额外生成
+    // -360 / +360 两份世界副本，SDK 会裁掉视野外的，任意视野里都至少有一条
+    // 从头到尾完整的弧线；短弧仍只生成一份，不浪费几何。
+    var lo = Infinity, hi = -Infinity;
+    pts.forEach(function (p) { lo = Math.min(lo, p.lng); hi = Math.max(hi, p.lng); });
+    var crosses = (lo < -180 || hi > 180 || hi - lo > 100);
+    var bases = crosses ? [-360, 0, 360] : [0];
+    var out = [];
+    bases.forEach(function (base) {
+      wrapSegs(pts, base).forEach(function (seg) {
+        if (seg.length > 1) out.push(seg);
+      });
+    });
+    return out;
+  }
   function arcPaths(from, to, scope) {
     var g = arcControl(from, to, scope), full = [], i;
     for (i = 0; i <= g.n; i++) full.push(bezierAt(g, i / g.n));
     // 1.0.11：整条曲线一次生成、统一单色；跨 180° 由 wrapSegs 统一切断
-    g.segs = wrapSegs(full);
+    g.segs = wrapSegs(full);            // Canvas 主窗口：配合本机中心窗口首尾相接
+    g.sdkSegs = worldSegs(full);        // SDK 合规底图：世界副本，长弧不再中断
+    g.cross = g.sdkSegs.length > 1 ? 1 : 0;
     return g;
   }
   // 按行政区聚合：境内按省、境外按国家。后端 hotspots 已带 province / country，
@@ -1273,7 +1358,8 @@
       // 保留成员明细：点击圆点时无需请求即可先展示 IP 与最近连接时间
       b.members.push({
         ip: String(h.ip || ''), n: wgt, last_ts: Number(h.last_ts) || 0,
-        verdict: h.verdict || '', city: h.city || '', isp: h.isp || '',
+        verdict: h.verdict || '', city: h.city || '',
+        district: h.district || '', isp: h.isp || '',
         province: h.province || '', country: h.country || '',
         lat: lat, lng: lng, scope: scope
       });
@@ -1281,13 +1367,17 @@
       if ((Number(h.last_ts) || 0) >= b.last_ts) { b.last_ts = Number(h.last_ts) || 0; b.ip = h.ip || ''; }
     });
     keys.sort(function (x, y) { return bins[y].n - bins[x].n; });
-    // 近距判断放在合并之后：同省 IP 全部计入访问次数，再按整组坐标决定是否画弧
+    // 1.1.15 修复「同省内 IP 在地图上不显示」：
+    // 旧阈值 0.35° 太大，同省不同市（例 广州 113.26 / 深圳 114.06，差 0.8° 内）
+    // 会被整组判成「与本机重合」，只留一个 2.6px 小点、不画任何线段。
+    // 现在只有坐标真正重合（<0.02°，约 2km）才合并成点，其余一律画弧；
+    // 短弧弯曲高度随距离收敛，不会鼓出回环（见 arcControl）。
     var near = 0, nearPts = [], kept = [];
     keys.forEach(function (k) {
       var b = bins[k];
       b.lat = b.lat / b.w; b.lng = b.lng / b.w;   // 加权平均 → 端点稳定不抖动
-      if (Math.abs(b.lat - home.lat) + Math.abs(b.lng - home.lng) * 0.85 < 0.35) {
-        near += b.ips;                            // 整组与本机重合：只画点，不画弧
+      if (Math.abs(b.lat - home.lat) + Math.abs(b.lng - home.lng) * 0.85 < 0.02) {
+        near += b.ips;                            // 坐标完全重合：只画点，不画弧
         nearPts.push({ lat: b.lat, lng: b.lng, n: b.n, region: b.region,
                        members: b.members, verdict: b.verdict, last_ts: b.last_ts });
         return;
@@ -1303,9 +1393,10 @@
     // 按省合并后常只剩 1~2 条弧，只对 list 归一会让所有线退化成中档，颜色变化看不出来。
     var nearList = nearPts.slice(0, 12);
     assignHeat(list.concat(nearList));
+    var cross = list.reduce(function (a, b) { return a + (b.g.cross || 0); }, 0);
     return { list: list, merged: Math.max(0, total - keys.length),
              skipped: Math.max(0, kept.length - limit), near: near,
-             nearPts: nearList };
+             nearPts: nearList, cross: cross };
   }
   function mapSignature(home) {
     return [S.hotspots.length,
@@ -1324,6 +1415,7 @@
     S.arcMerged = S.arcData.world.merged + S.arcData.cn.merged;
     S.arcSkipped = S.arcData.world.skipped + S.arcData.cn.skipped;
     S.arcNear = S.arcData.world.near + S.arcData.cn.near;
+    S.arcCross = (S.arcData.world.cross || 0) + (S.arcData.cn.cross || 0);
     return true;
   }
   function tileStat() {
@@ -1351,7 +1443,9 @@
     return [
       ['当前服务商', _pd.name + ( _pd.builtin ? '' : ' · 自定义')],
       ['引擎 / 坐标系', _ed.label + ' / ' + (_pd.coord || '—')],
-      ['SDK 地址', urlHost(mapSdkUrl(_pd, providerKey(_pd.id), '__cb__'))],
+      ['SDK 地址', urlHost(mapSdkUrl(_pd, providerKey(_pd.id), '__cb__')) +
+        (/webapiamap\.com|webapi\.amap\.com\.cn/i.test(String(_pd.sdk || '')) ?
+          ' · 已自动纠正旧域名' : '')],
       ['KEY 已配置', mapIsConfigured(_pd.id) ?
         '是（长度 ' + providerKey(_pd.id).length + '）' : '否'],
       ['SDK 已加载', _ed.ready() ? '是' : '否'],
@@ -1362,6 +1456,7 @@
       ['底图资源请求', tileText],
       ['弧线绘制', S.arcDrawn + ' 条 · 合并 ' + S.arcMerged + ' 个 · 近距 ' +
         S.arcNear + ' 个 · 省略 ' + S.arcSkipped + ' 个'],
+      ['跨日期变更线', S.arcCross + ' 条 · 已生成连续世界副本，长弧不在 ±180° 处中断'],
       ['地图重绘', S.redraws + ' 次 · 最近 ' + S.lastDrawMs.toFixed(1) + ' ms（数据未变时跳过）'],
       ['刷新间隔', '事件 ' + (Number(S.cfg.map_refresh) || 3) + ' s / 地图 ' +
         (Number(S.cfg.map_heavy_refresh) || 12) + ' s'],
@@ -1458,7 +1553,7 @@
         });
         S.geoMarks.on('click', function (evt) {
           var id = geoId(evt), r = S.geoMarkIndex[id];
-          if (r) openRegionProfile(r.name, 'all');
+          if (r) openRegionProfile(r.name, r.scope || 'all');
         });
         if (S.geoData) drawGeoMarkers();
       } else {
@@ -1553,7 +1648,8 @@
         var cid = prefix + '_' + Math.round(b.lat * 1000) + '_' + Math.round(b.lng * 1000);
         // 指纹含坐标与弯曲幅度：几何真变了才提交 GPU 缓冲
         var sig = [b.tier, b.verdict, b.lat, b.lng, home.lat, home.lng, S.arcBend].join('|');
-        b.g.segs.forEach(function (seg, j) {
+        // 1.1.15：SDK 用世界副本折线；无该字段时回退主窗口，兼容旧缓存数据
+        (b.g.sdkSegs || b.g.segs).forEach(function (seg, j) {
           var id = cid + '_s' + j;
           geos.push({
             id: id, sig: sig,
@@ -1732,22 +1828,24 @@
         '在线核验会同时查询 ip-api.com / ip.sb / ipinfo.io，并与本地库共 4 票多数派裁决。</p>' +
         '<button class="profile-btn" data-act="verify">立即在线核验</button></div>';
     }
-    var loc = [v.country, v.province, v.city].filter(Boolean).join(' · ');
+    // 1.1.15：区级信息（省 / 市 / 区县）统一进入裁决结果、每个数据源明细与画像头部
+    var loc = [v.country, v.province, v.city, v.district].filter(Boolean).join(' · ');
     var l = v.local || {};
-    var lloc = [l.country, l.province, l.city].filter(Boolean).join(' · ');
+    var lloc = [l.country, l.province, l.city, l.district].filter(Boolean).join(' · ');
     h += '<div class="verify-box">' +
       '<div class="verify-top"><span class="vf-tag ' + (v.disagree ? 'warn' : 'ok') + '">' +
       (v.disagree ? '存在源间分歧' : '多源一致') + '</span>' +
       '<span class="vf-conf">置信度 ' + esc(CONF_NAME[v.confidence] || v.confidence || '—') +
       ' · ' + num(v.online_sources || 0) + ' 家在线源</span></div>';
     h += kvRow('裁决结果', loc || '未知') +
+      kvRow('区级信息', v.district || '在线源未返回，可手工补充') +
       kvRow('本地离线库', lloc || '—') +
       kvRow('核验时间', tm(v.checked_at)) +
       kvRow('在线坐标', (v.lat != null && v.lat !== '') ? v.lat + ', ' + v.lng : '—');
     if (v.sources && v.sources.length) {
       h += '<div class="verify-src">' + v.sources.map(function (s) {
         return '<div class="vs-row"><b>' + esc(s.source || '') + '</b><span>' +
-          esc([s.country, s.province, s.city].filter(Boolean).join(' · ') || '—') +
+          esc([s.country, s.province, s.city, s.district].filter(Boolean).join(' · ') || '—') +
           '</span></div>';
       }).join('') + '</div>';
     }
@@ -1756,6 +1854,15 @@
         '各数据源判定不一致，已按多数派裁决。出口 IP 的归属不等于设备物理位置。</p>';
     }
     h += '<button class="profile-btn" data-act="verify">重新核验（忽略缓存）</button></div>';
+    // 免费在线源对区县覆盖不稳定：查不到时允许手工填写，直接回写该 IP 的历史记录
+    h += '<div class="verify-box" style="margin-top:10px">' +
+      '<p class="hint" style="margin:0 0 8px">区县由独立源补充，免费接口覆盖不全。' +
+      '缺失时可手工填写，保存后会写入 geo_cache 并回写该 IP 的历史事件。</p>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
+      '<input id="districtInput" type="text" maxlength="40" placeholder="例如：蜀山区" ' +
+      'value="' + esc(v.district || '') + '" style="flex:1;min-width:160px;background:var(--panel-2);' +
+      'border:1px solid var(--line);border-radius:8px;padding:7px 9px;color:inherit">' +
+      '<button class="profile-btn" data-act="district">保存区级信息</button></div></div>';
     return h;
   }
   // 画像抽屉统一事件：IP 切换 / 返回整组 / 在线核验
@@ -1766,6 +1873,22 @@
       if (back && groupHit) { openGroupProfile(groupHit); return; }
       var el = e.target.closest('.ip-item[data-ip]');
       if (el) { openDetail(el.getAttribute('data-ip'), groupHit); return; }
+      // 1.1.15：手工补充区级信息，写 geo_cache 并回写历史事件
+      var di = e.target.closest('[data-act="district"]');
+      if (di) {
+        var box = root.querySelector('#districtInput');
+        var val = box ? String(box.value || '').trim().slice(0, 40) : '';
+        di.disabled = true;
+        api('api/geo/district', 'POST', { ip: ip, district: val }).then(function (r) {
+          if (!r.ok) throw new Error(r.msg || '保存失败');
+          toast(val ? '区级信息已保存：' + val : '已清空区级信息');
+          openDetail(ip, groupHit);
+        }).catch(function (er) {
+          toast('保存失败：' + er.message);
+          di.disabled = false;
+        });
+        return;
+      }
       var v = e.target.closest('[data-act="verify"]');
       if (!v) return;
       v.disabled = true; v.textContent = '核验中…（约 2–8 秒）';
@@ -1802,9 +1925,17 @@
       return hit.detail;
     });
   }
+  function geoText(m) {
+    // 1.1.15：整组画像里的每个 IP 也展示到区级，和「IP 来源记录」口径一致
+    return [m.country, m.province, m.city, m.district, m.isp]
+      .filter(function (x) { return x && x !== '0'; }).join(' · ');
+  }
   function ipItem(m, cur) {
-    return '<div class="ip-item' + (cur ? ' cur' : '') + '" data-ip="' + esc(m.ip) + '">' +
-      '<span class="ip">' + esc(m.ip) + '</span>' +
+    var loc = geoText(m);
+    return '<div class="ip-item' + (cur ? ' cur' : '') + '" data-ip="' + esc(m.ip) +
+      '" title="' + esc(loc || m.ip) + '">' +
+      '<span class="ip">' + esc(m.ip) +
+      (loc ? '<small class="ip-loc">' + esc(loc) + '</small>' : '') + '</span>' +
       '<span class="badge ' + esc(m.verdict || 'normal') + '">' +
       esc(VERDICT_NAME[m.verdict] || '记录') + '</span>' +
       '<span class="t">' + num(m.n) + ' 次<br>' + tm(m.last_ts) + '</span></div>';
@@ -1886,9 +2017,27 @@
     return [((lng - b.lngMin) / (b.lngMax - b.lngMin)) * w,
             ((b.latMax - lat) / (b.latMax - b.latMin)) * h];
   }
+  // 1.1.15 修复「境外全球视图长弧线中断」——等距投影侧：
+  // 旧窗口固定 [-180,180]，跨国际日期变更线的长弧被 wrapSegs 切成两半，
+  // 分别落在画布最左 / 最右，中间隔着整幅地图，看起来就是线画到一半断了。
+  // 改成「以本机经度为中心的 360° 窗口」后，每条弧按最短经度差展开到同一个
+  // 连续区间里，被切开的两段在窗口内自然首尾相接，整条弧一笔画完。
+  // 本机也正好落在画布中央，与「所有来源汇聚到本机」的放射语义一致。
+  function worldCenteredBounds(home) {
+    var c = Number(home && home.lng) || 114.06;
+    return { latMin: WORLD_BOUNDS.latMin, latMax: WORLD_BOUNDS.latMax,
+             lngMin: c - 180, lngMax: c + 180 };
+  }
+  function unwrapTo(lng, center) {
+    var x = Number(lng) || 0, c = Number(center) || 0;
+    while (x - c > 180) x -= 360;
+    while (x - c < -180) x += 360;
+    return x;
+  }
   function canvasBg(which, w, h, dpr, b) {
     // 渐变 / 经纬网 / 说明文字是静态的，离屏画一次，之后每帧只 drawImage
-    var key = w + 'x' + h + '@' + dpr;
+    // 1.1.15：本机经度变化时窗口也变，背景经纬网必须跟着重建
+    var key = w + 'x' + h + '@' + dpr + '#L' + Math.round(b.lngMin);
     var cached = S.bg[which];
     if (cached && cached.key === key) return cached.img;
     var off = document.createElement('canvas');
@@ -1909,7 +2058,9 @@
     }
     c.stroke(); c.setLineDash([]);
     c.fillStyle = 'rgba(140,170,210,.35)'; c.font = '10px sans-serif';
-    c.fillText(which === 'world' ? '经度 -180° … 180°' : '中国境内坐标范围', 10, 16);
+    c.fillText(which === 'world'
+      ? '经度 ' + Math.round(b.lngMin) + '° … ' + Math.round(b.lngMax) + '°（以本机为中心）'
+      : '中国境内坐标范围', 10, 16);
     c.fillText('纬度 ' + b.latMax + '° … ' + b.latMin + '°', 10, 30);
     S.bg[which] = { key: key, img: off };
     return off;
@@ -1918,12 +2069,14 @@
     var isWorld = which === 'world';
     var s = setupCanvas(isWorld ? 'worldCanvas' : 'cnCanvas');
     if (!s) return;
-    var ctx = s.ctx, w = s.w, h = s.h, b = isWorld ? WORLD_BOUNDS : CN_BOUNDS;
+    var home = { lat: Number(S.home.lat) || 22.54, lng: Number(S.home.lng) || 114.06 };
+    // 1.1.15：全球散点视图以本机经度为中心，长弧不再在 ±180° 处断成两截
+    var ctx = s.ctx, w = s.w, h = s.h;
+    var b = isWorld ? worldCenteredBounds(home) : CN_BOUNDS;
     var picks = [];
     ctx.clearRect(0, 0, w, h);
     ctx.drawImage(canvasBg(which, w, h, s.dpr, b), 0, 0, w, h);
 
-    var home = { lat: Number(S.home.lat) || 22.54, lng: Number(S.home.lng) || 114.06 };
     var scope = isWorld ? 'overseas' : 'cn';
     var data = (isWorld ? S.arcData.world : S.arcData.cn) || emptyArcs();
     var hp = proj(home.lat, home.lng, b, w, h);
@@ -1937,7 +2090,7 @@
       group.forEach(function (p) {
         p.g.segs.forEach(function (seg) {
           seg.forEach(function (q, i) {
-            var xy = proj(q.lat, q.lng, b, w, h);
+            var xy = proj(q.lat, unwrapTo(q.lng, home.lng), b, w, h);
             if (i === 0) ctx.moveTo(xy[0], xy[1]); else ctx.lineTo(xy[0], xy[1]);
           });
         });
@@ -1953,9 +2106,8 @@
       ctx.beginPath();
       data.list.forEach(function (p) {
         var q = bezierAt(p.g, t);
-        while (q.lng > 180) q.lng -= 360;
-        while (q.lng < -180) q.lng += 360;
-        var xy = proj(q.lat, q.lng, b, w, h);
+        // 1.1.15：与描边使用同一套「本机中心窗口」展开，光点不会瞬移到画布另一端
+        var xy = proj(q.lat, unwrapTo(q.lng, home.lng), b, w, h);
         ctx.moveTo(xy[0] + 1.8, xy[1]);
         ctx.arc(xy[0], xy[1], 1.8, 0, Math.PI * 2);
       });
@@ -1969,7 +2121,7 @@
       function ring(extra, mul, alpha) {
         ctx.beginPath();
         group.forEach(function (p) {
-          var sp = proj(p.lat, p.lng, b, w, h);
+          var sp = proj(p.lat, unwrapTo(p.lng, home.lng), b, w, h);
           var r = Math.min(7, 2.5 + Math.log(1 + p.n) * 1.4) * mul + extra;
           ctx.moveTo(sp[0] + r, sp[1]);
           ctx.arc(sp[0], sp[1], r, 0, Math.PI * 2);
@@ -1982,12 +2134,12 @@
     });
     // 记录命中区域：散点模式没有 SDK 事件，靠坐标命中实现同样的点击交互
     data.list.forEach(function (p) {
-      var sp = proj(p.lat, p.lng, b, w, h);
+      var sp = proj(p.lat, unwrapTo(p.lng, home.lng), b, w, h);
       picks.push({ x: sp[0], y: sp[1], r: Math.min(11, 4 + Math.log(1 + p.n) * 1.4),
                    kind: 'src', scope: scope, data: p });
     });
     (data.nearPts || []).forEach(function (p) {
-      var np = proj(p.lat, p.lng, b, w, h);
+      var np = proj(p.lat, unwrapTo(p.lng, home.lng), b, w, h);
       ctx.globalAlpha = 0.85; ctx.fillStyle = ARC_HEAT[(p.tier || 3) - 1];
       ctx.beginPath(); ctx.arc(np[0], np[1], 2.6, 0, Math.PI * 2); ctx.fill();
       ctx.globalAlpha = 1;
@@ -3060,6 +3212,10 @@
       'ip-api.com / ip.sb / ipinfo.io / 本地库 共 4 票多数派裁决，' +
       '结果缓存并回写历史事件；在线不可用时自动回退离线库，不影响采集。</p>' +
       sw('geo_verify_enabled', '启用在线多源校验', '后台低频校验高频公网 IP，遵守在线源限流') +
+      sw('geo_verify_auto', '新 IP 首次出现即自动核验',
+         '1.1.15：新公网 IP 一入库就进后台队列，不用再手动点「批量校验高频 IP」') +
+      sw('geo_district_enabled', '补充探测区级信息',
+         '用独立源补区县（如蜀山区），不参与省 / 市 4 票裁决，避免把国内库偏差带进来') +
       fld('geo_verify_days', '核验结果有效期（天）', 'number') +
       fld('geo_verify_batch', '后台批量校验 IP 数', 'number') +
       '<div id="geoSrcBox" class="diag-box"></div>' +
@@ -3126,7 +3282,19 @@
       '<button class="btn primary" id="btnSaveCfg">保存配置</button>' +
       '<button class="btn" id="btnReload">重载采集器</button>' +
       '<button class="btn ghost" id="btnExport2">导出 CSV</button>' +
-      '<button class="btn ghost" id="btnBackfill">回填历史日志</button></div>';
+      '<button class="btn ghost" id="btnBackfill">回填历史日志</button></div>' +
+      // 1.1.15：问题反馈出口放在设置最底部，一份文件就能定位「打不开 / 没数据 / 底图异常」
+      '<div class="form-group"><h3>问题反馈 · 运行日志一键导出</h3>' +
+      '<p class="hint">把主运行日志、兜底副本、生命周期日志、应用状态与数据源状态合成一份纯文本。' +
+      '地图 KEY / 令牌 / 口令会被抹除，来访 IP 只保留前两段（例 220.205.*.*），' +
+      '不含原始日志行与数据库明细。导出后直接贴到 Issue 即可，不必再手动翻服务器。</p>' +
+      '<div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap">' +
+      '<button class="btn" id="btnDiagExport">导出运行日志（已脱敏）</button>' +
+      '<button class="btn ghost" id="btnDiagView">先在界面预览</button></div>' +
+      '<div id="diagPreview" class="diag-box" style="display:none;margin-top:10px"></div>' +
+      '<p class="hint" style="margin:8px 0 0">命令行用户也可以用仓库里的 ' +
+      '<code>tools/diag_bundle.sh</code> 收集同样的信息并自动打 tar.gz。</p>' +
+      '</div>';
     $('settingsBody').innerHTML = html;
     bindMapService();
     bindSummary();
@@ -3209,6 +3377,20 @@
         toast('历史日志回填已在后台启动，约 10–60 秒后刷新页面');
       }).catch(function (e) { toast('回填失败：' + e.message); });
     };
+    $('btnDiagExport').onclick = exportDiag;
+    $('btnDiagView').onclick = function () {
+      var box = $('diagPreview');
+      box.style.display = 'block';
+      box.textContent = '正在生成脱敏诊断包…';
+      fetchDiag().then(function (txt) {
+        box.textContent = txt;
+        box.style.whiteSpace = 'pre-wrap';
+        box.style.maxHeight = '320px';
+        box.style.overflowY = 'auto';
+        box.style.fontFamily = 'ui-monospace,Menlo,Consolas,monospace';
+        box.style.fontSize = '11px';
+      }).catch(function (e) { box.textContent = '生成失败：' + e.message; });
+    };
   }
   function applyCfg() {
     S.arcLimit = Math.max(5, Math.min(60, Number(S.cfg.map_arc_limit) || 16));
@@ -3265,6 +3447,24 @@
       setTimeout(function () { URL.revokeObjectURL(a.href); }, 3000);
     });
   }
+  // 1.1.15：运行日志一键导出。后端 /api/diag/export 返回的是 text/plain，
+  // 不能走 api() 的 r.json()，这里单独取文本；下载与预览共用同一份内容。
+  function fetchDiag() {
+    return fetch(url('api/diag/export')).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.text();
+    });
+  }
+  function exportDiag() {
+    fetchDiag().then(function (txt) {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([txt], { type: 'text/plain;charset=utf-8' }));
+      a.download = 'ipsense-diag-' + new Date().toISOString().replace(/[:.]/g, '-') + '.txt';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 3000);
+      toast('运行日志已导出（已脱敏）');
+    }).catch(function (e) { toast('导出失败：' + e.message); });
+  }
 
   // ---- IP 详情：表格行点击与地图圆点点击共用同一套「IP 来源画像」版式 ----
   function openDetail(ip, groupHit) {
@@ -3273,7 +3473,7 @@
     $('detailBody').innerHTML = '<div class="empty">正在读取该 IP 的访问画像…</div>';
     api('api/ip?ip=' + encodeURIComponent(ip)).then(function (r) {
       var g = r.geo || {}, i = r.data.info || {}, a = r.data.agg || {};
-      var loc = [g.country, g.province, g.city, g.isp].filter(function (x) { return x && x !== '0'; }).join(' · ');
+      var loc = [g.country, g.province, g.city, g.district, g.isp].filter(function (x) { return x && x !== '0'; }).join(' · ');
       var rows = [
         ['IP 地址', ip], ['归属地', loc || '未知'], ['范围', SCOPE_NAME[g.scope] || '未知'],
         ['坐标', (g.lat != null ? g.lat + ', ' + g.lng : '—')],
@@ -3449,7 +3649,7 @@
         var d = Math.sqrt((x - p.x) * (x - p.x) + (y - p.y) * (y - p.y));
         if (d <= p.r + 6 && d < bd) { bd = d; best = p; }
       });
-      if (best) openRegionProfile(best.name, 'all');
+      if (best) openRegionProfile(best.name, best.scope || 'all');
     });
     $('geoCanvas').addEventListener('mousemove', function (e) {
       var r = this.getBoundingClientRect();
@@ -3493,6 +3693,11 @@
     ['fScope', 'fVerdict', 'fProto', 'fSource'].forEach(function (id) {
       $(id).onchange = function () { S.page = 1; loadHeavy(); };
     });
+    // 1.1.15：实时访问事件监控范围（全部 / 境内 / 境外 / 内网 / 局域网设备）
+    $('liveScope').onchange = function () {
+      S.liveScope = this.value;
+      renderLive(S.live);
+    };
     var qt = null;
     $('fQuery').oninput = function () {
       clearTimeout(qt); qt = setTimeout(function () { S.page = 1; loadHeavy(); }, 350);

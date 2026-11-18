@@ -29,6 +29,9 @@ import concurrent.futures
 UA = "Mozilla/5.0 (compatible; ipsense/1.0.8; local-nas-app)"
 
 SOURCES = ("ip-api.com", "ip.sb", "ipinfo.io", "ip2region(本地)")
+# 1.1.15：区级补充源只用来补 district，不参与 4 票裁决，
+# 避免把国内库的省级偏差带进多数派结果（实测 220.205.91.142 国内源误判广东）。
+DISTRICT_SOURCES = ("ip-api.com", "ip9.com.cn")
 
 ISO_CN = {
     "CN": "中国", "US": "美国", "JP": "日本", "KR": "韩国", "DE": "德国",
@@ -149,6 +152,12 @@ def norm_city(s):
     return CITY_CN.get(s.lower(), s)
 
 
+def norm_district(s):
+    """区县名归一：去 0 / - / 未知 等哨兵值，保留「蜀山区」原样。"""
+    v = (s or "").strip() if isinstance(s, str) else ""
+    return "" if v in ("", "0", "-", "未知", "unknown", "None") else v
+
+
 def _http(url, data=None, timeout=6):
     """直连请求（绕过系统代理），返回解码后的文本。"""
     req = urllib.request.Request(url, data=data, headers={
@@ -162,13 +171,15 @@ def _http(url, data=None, timeout=6):
 
 def fetch_ipapi(ip):
     d = json.loads(_http("http://ip-api.com/json/%s?lang=zh-CN&fields="
-                         "status,message,country,countryCode,regionName,city,isp,lat,lon,query"
+                         "status,message,country,countryCode,regionName,city,district,"
+                         "isp,lat,lon,query"
                          % urllib.parse.quote(ip, safe="")))
     if d.get("status") != "success":
         return None
     return {
         "source": "ip-api.com", "country": norm_country(d.get("country") or d.get("countryCode")),
         "province": norm_prov(d.get("regionName")), "city": norm_city(d.get("city")),
+        "district": norm_district(d.get("district")),
         "isp": (d.get("isp") or "").strip(),
         "lat": d.get("lat"), "lng": d.get("lon"),
     }
@@ -179,6 +190,7 @@ def fetch_ipsb(ip):
     return {
         "source": "ip.sb", "country": norm_country(d.get("country")),
         "province": norm_prov(d.get("region")), "city": norm_city(d.get("city")),
+        "district": "",
         "isp": (d.get("isp") or d.get("asn_organization") or "").strip(),
         "lat": d.get("latitude"), "lng": d.get("longitude"),
     }
@@ -196,8 +208,29 @@ def fetch_ipinfo(ip):
     return {
         "source": "ipinfo.io", "country": norm_country(d.get("country")),
         "province": norm_prov(d.get("region")), "city": norm_city(d.get("city")),
+        "district": "",
         "isp": (d.get("org") or "").strip(), "lat": lat, "lng": lng,
     }
+
+
+def fetch_ip9(ip):
+    """国内区县级补充源（1.1.15）：只取 area 作为 district。
+
+    实测该源对 220.205.91.142 等网段给的是「广东/广州」，与三家国际源和
+    用户实测的「安徽/合肥」冲突，因此刻意不进 FETCHERS、不参与 4 票裁决。
+    """
+    d = json.loads(_http("https://ip9.com.cn/get?ip=" +
+                         urllib.parse.quote(ip, safe=""), timeout=5))
+    if d.get("ret") != 200:
+        return None
+    x = d.get("data") or {}
+    return {"source": "ip9.com.cn(区县)",
+            "country": norm_country(x.get("country")),
+            "province": norm_prov(x.get("prov")),
+            "city": norm_city(x.get("city")),
+            "district": norm_district(x.get("area")),
+            "isp": (x.get("isp") or "").strip(),
+            "lat": x.get("lat"), "lng": x.get("lng")}
 
 
 FETCHERS = (("ip-api.com", fetch_ipapi), ("ip.sb", fetch_ipsb),
@@ -229,6 +262,7 @@ def vote(local, online):
     local_vote = {
         "source": "ip2region(本地)", "country": norm_country(local.get("country")),
         "province": norm_prov(local.get("province")), "city": norm_city(local.get("city")),
+        "district": norm_district(local.get("district")),
         "isp": (local.get("isp") or "").strip(),
         "lat": local.get("lat"), "lng": local.get("lng"),
     }
@@ -260,6 +294,8 @@ def vote(local, online):
     city_votes = [c["city"] for c in candidates if c["city"]]
     city, _ = _most_common(city_votes)
     isp, _ = _most_common([c["isp"] for c in candidates])
+    # 1.1.15：区级单独投票，缺字段的源不参与（不把空串当一票）。
+    district, _ = _most_common([c.get("district", "") for c in candidates])
 
     # 坐标（1.0.9）：必须与最终裁决的省份一致。
     # 旧逻辑取「第一个有坐标的在线源」，在线源缺坐标时回退本地库，
@@ -315,10 +351,11 @@ def vote(local, online):
 
     scope = "cn" if (country == "中国" or province in
                      ("中国香港", "中国澳门", "中国台湾")) else "overseas"
-    label = "·".join([x for x in (country, province, city) if x]) or "未知归属"
+    label = "·".join([x for x in (country, province, city, district) if x]) or "未知归属"
     geo = {
         "ip": local.get("ip"), "country": country, "province": province,
-        "city": city, "isp": isp, "scope": scope, "label": label,
+        "city": city, "district": district, "isp": isp,
+        "scope": scope, "label": label,
         "lat": round(lat, 4) if isinstance(lat, (int, float)) else None,
         "lng": round(lng, 4) if isinstance(lng, (int, float)) else None,
         "ipver": local.get("ipver", 4),
@@ -340,7 +377,10 @@ class GeoVerifier(object):
         self.geo = geo
         self.settings = settings
         self.log = log or (lambda m: None)
-        self.q = queue.Queue()
+        # 1.1.15：新 IP 首次出现也会入队，队列必须有界 + 去重，
+        # 否则扫描高峰期会把在线源打爆。
+        self.q = queue.Queue(maxsize=512)
+        self._pending = set()
         self.stats_lock = threading.Lock()
         self.source_stat = {}
         self.verified = 0
@@ -374,7 +414,8 @@ class GeoVerifier(object):
             sources = []
         g = {
             "ip": ip, "country": r.get("country", ""), "province": r.get("province", ""),
-            "city": r.get("city", ""), "isp": r.get("isp", ""),
+            "city": r.get("city", ""), "district": r.get("district", ""),
+            "isp": r.get("isp", ""),
             "scope": r.get("scope", "cn"), "label": r.get("label", ""),
             "lat": r.get("lat"), "lng": r.get("lng"), "ipver": r.get("ipver", 4),
             "verified": True, "verification": {
@@ -383,6 +424,7 @@ class GeoVerifier(object):
                 "online_sources": r.get("online_sources", 0),
                 "checked_at": r.get("checked_at"), "sources": sources,
                 "country_votes": [], "province_candidates": [],
+                "district_source": r.get("district_source", ""),
             },
         }
         return g
@@ -398,8 +440,10 @@ class GeoVerifier(object):
             sources = []
         return {
             "ip": ip, "country": r.get("country", ""), "province": r.get("province", ""),
-            "city": r.get("city", ""), "isp": r.get("isp", ""),
+            "city": r.get("city", ""), "district": r.get("district", ""),
+            "isp": r.get("isp", ""),
             "lat": r.get("lat"), "lng": r.get("lng"),
+            "district_source": r.get("district_source", ""),
             "local": {"country": r.get("local_country", ""),
                       "province": r.get("local_province", ""),
                       "city": r.get("local_city", "")},
@@ -438,6 +482,19 @@ class GeoVerifier(object):
                 if err:
                     errors.append(err)
         geo, vf = vote(local, online)
+        # 1.1.15：区级补充探测（独立源，不进裁决；失败不影响主流程）。
+        if not geo.get("district") and geo.get("country") == "中国" and \
+                self.settings.get("geo_district_enabled", True):
+            try:
+                d9 = fetch_ip9(ip)
+                if d9 and d9.get("district"):
+                    geo["district"] = d9["district"]
+                    geo["label"] = "·".join(
+                        [x for x in (geo["country"], geo["province"],
+                                     geo["city"], geo["district"]) if x])
+                    vf["district_source"] = "ip9.com.cn"
+            except Exception as e:
+                errors.append("ip9: %s" % str(e)[:80])
         vf["errors"] = errors
         vf["local"] = {"country": local.get("country"), "province": local.get("province"),
                        "city": local.get("city"), "isp": local.get("isp")}
@@ -457,10 +514,32 @@ class GeoVerifier(object):
                 "verification": vf, "events_updated": updated, "errors": errors}
 
     def enqueue(self, ip):
+        """新 IP / 高频 IP 统一入队；已缓存、已在队列、队列满时不重复提交。"""
+        if not ip or not self.settings.get("geo_verify_enabled", True):
+            return False
+        if self.cached(ip):
+            return False
+        with self.stats_lock:
+            if ip in self._pending:
+                return False
+            self._pending.add(ip)
         try:
             self.q.put_nowait(ip)
         except queue.Full:
+            with self.stats_lock:
+                self._pending.discard(ip)
+            return False
+        return True
+
+    def set_district(self, ip, district):
+        """用户在 IP 画像里手工补充区县，回写事件与缓存。"""
+        d = norm_district(district)[:40]
+        n = self.store.set_district(ip, d)
+        try:
+            self.geo.invalidate(ip)
+        except Exception:
             pass
+        return n
 
     def _loop(self):
         while not self.stop_evt.is_set():
@@ -475,14 +554,16 @@ class GeoVerifier(object):
                     self.verify(ip)
             except Exception as e:
                 self.log("geo verify %s: %s" % (ip, e))
+            finally:
+                with self.stats_lock:
+                    self._pending.discard(ip)
             # 在线源限流：每次至少间隔 1.5 s
             self.stop_evt.wait(1.5)
 
     def queue_top(self, limit=60):
         ips = self.store.top_public_ips(limit)
         for ip in ips:
-            if not self.cached(ip):
-                self.enqueue(ip)
+            self.enqueue(ip)
         return len(ips)
 
     def stats(self):

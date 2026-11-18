@@ -1,0 +1,180 @@
+name: 问题反馈（BUG）
+description: 提交 ipsense 的功能异常。请先跑一次诊断收集，填全下面 6 件套，能省掉来回追问。
+title: "[BUG] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > **只观测、不封禁、不改防火墙、不自动处置。** ipsense 只读取、汇总、展示访问与扫描来源日志，不做实时防护。
+
+        ## 提交前请先做这一步
+
+        **推荐**：打开应用「设置 → 最底部 → 运行日志一键导出」，得到一份已脱敏的 `.txt`。
+        **或者**：SSH 到设备上跑 `sh tools/diag_bundle.sh`，得到 `ipsense-diag-*.tar.gz`。
+
+        两种方式都会自动抹除地图 KEY / 令牌 / 口令 / 邮箱，来访 IP 只保留前两段。
+        ⚠️ **请千万不要直接粘贴未经脱敏的 `config.json`、完整日志或 `events.db`。**
+
+        完整 SOP 见 [docs/排障指南.md](https://github.com/wangbujiangwude/ipsense-fnos/blob/main/docs/%E6%8E%92%E9%9A%9C%E6%8C%87%E5%8D%97.md)。
+
+  # ---------------- ① 现象与时间 ----------------
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: "① 问题现象 · 属于哪一类"
+      description: 选最接近的一项；细节写在下面的描述里。
+      multiple: false
+      options:
+        - 打不开 / 白屏 / 应用启动失败
+        - 没有数据 / 数据不刷新 / 状态标异常
+        - 底图不显示 / KEY 报错 / 地图交互异常
+        - IP 归属地或区级信息不准
+        - 卡顿 / 内存占用高 / 加载慢
+        - 汇总日志没生成 / 保存位置有问题
+        - 设置项或原生文件夹选择器异常
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: "① 问题现象 · 具体描述"
+      description: 你做了什么、期望看到什么、实际看到什么。一句话也行，别只写「打不开」。
+      placeholder: |
+        例：点开「IP 来源画像」后一直停在「正在读取…」，约 15 秒后显示「请求超时」；
+        同一时间在记录表里点同一行是正常的。
+    validations:
+      required: true
+
+  - type: input
+    id: when
+    attributes:
+      label: "① 问题现象 · 发生时间与界面时间范围"
+      description: 例：2026-11-18 21:30 左右，界面选的「最近 24 小时」。日志是按时间检索的，这一项很关键。
+      placeholder: "2026-11-18 21:30 · 最近 24 小时"
+    validations:
+      required: true
+
+  # ---------------- ② 版本与环境 ----------------
+  - type: input
+    id: version
+    attributes:
+      label: "② 版本与环境 · 应用版本"
+      description: 页面右下角，或「设置 → 底图诊断 → SDK 地址」下方的版本号；也可以看 FPK 文件名。
+      placeholder: "1.1.15"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: arch
+    attributes:
+      label: "② 版本与环境 · 设备架构 / 安装包"
+      multiple: false
+      options:
+        - x86_64（_x86.fpk）
+        - ARM64（_arm.fpk）
+        - 通用包（_all.fpk）
+        - 不确定
+    validations:
+      required: true
+
+  - type: input
+    id: fnos
+    attributes:
+      label: "② 版本与环境 · fnOS 版本与安装方式"
+      description: 例：fnOS 1.1.31，应用中心手动安装；或「从 1.1.14 覆盖升级」。
+      placeholder: "fnOS 2.0.0 · 应用中心手动安装"
+    validations:
+      required: true
+
+  # ---------------- ③ 运行日志诊断包 ----------------
+  - type: textarea
+    id: diag_bundle
+    attributes:
+      label: "③ 运行日志诊断包（已脱敏）"
+      description: |
+        把「设置 → 运行日志一键导出」的 .txt 内容粘进来；或把 diag_bundle.sh 生成的
+        tar.gz 拖到本输入框上传，并在下面写一句「已附诊断包」。
+        诊断包已包含主运行日志、兜底副本、生命周期日志、应用状态、数据源状态与配置的脱敏版。
+      placeholder: |
+        粘贴 ipsense-diag-*.txt 的内容，或写「已附 ipsense-diag-*.tar.gz」并上传附件。
+        （如果确实拿不到，请写明原因，例如「应用起不来，SSH 也连不上」）
+      render: text
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: "③ 隐私确认"
+      options:
+        - label: 我已确认上面内容经过脱敏，没有直接粘贴 config.json 原文、完整日志或数据库文件
+          required: true
+
+  # ---------------- ④ 健康与状态 ----------------
+  - type: textarea
+    id: health
+    attributes:
+      label: "④ 健康与状态输出"
+      description: |
+        诊断包里的 60-health.txt / 70-probe-status.txt 就是这一项，可直接粘贴。
+        手工命令：
+        `python3 $TRIM_APPDEST/server/gateway.py probe`、`... status`，
+        `curl --unix-socket $TRIM_APPDEST/app.sock http://localhost/app/ipsense/api/health`
+        （同样试 /api/status、/api/sources）。
+      placeholder: |
+        status=running pid=12345 sock=yes
+        {"ok":true,"version":"1.1.15", ...}
+      render: shell
+    validations:
+      required: true
+
+  # ---------------- ⑤ 底图与数据源诊断 ----------------
+  - type: textarea
+    id: map_and_sources
+    attributes:
+      label: "⑤ 底图与数据源诊断"
+      description: |
+        「设置 → 底图诊断」里的全部条目（可点「复制诊断信息」），
+        再加一句顶部状态标颜色（运行中 / 部分数据异常 / 连接失败 / 归属库异常）
+        以及数据源列表里哪些是「已读取 / 文件不存在 / 读取异常」。
+        若问题与地图无关，写「不涉及地图；数据源状态如下：…」即可。
+      placeholder: |
+        当前服务商：高德地图 JS API 2.0
+        SDK 地址：webapi.amap.com
+        KEY 已配置：是
+        底图状态：error · 高德 SDK 未就绪 …
+        顶部状态标：部分数据异常
+        数据源：本机 SSH 已读取 120 条 / 路由器 syslog 文件不存在
+    validations:
+      required: true
+
+  # ---------------- ⑥ 复现与截图 ----------------
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: "⑥ 复现步骤与截图"
+      description: |
+        1. 按 1 / 2 / 3 写出稳定复现步骤；
+        2. 贴上界面截图（可直接把图片拖进输入框）；
+        3. 如果浏览器控制台有红色报错，按 F12 后把 Console / Network 里的失败项一起贴来。
+        偶发问题请写清「多久出现一次、重启应用后是否恢复」。
+      placeholder: |
+        1. 打开应用，等首屏加载完
+        2. 点「IP 来源记录」任意一行
+        3. 抽屉停在「正在读取…」直到超时
+        截图：（拖入图片）
+        控制台：GET /api/ip?ip=… 504
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+
+        提交前最后检查：6 件套（① 现象与时间 ② 版本与环境 ③ 脱敏诊断包 ④ 健康状态 ⑤ 底图与数据源 ⑥ 复现与截图）都填了吗？
+
+        缺任何一项通常都要再追问一轮，会明显拖慢定位。谢谢你的耐心 🙏

@@ -155,7 +155,10 @@ window.addEventListener('error',function(e){
     latest_name:'ipsense-summary-latest.md',last_at:now-60,
     last_file:'/vol1/1000/AIlogs/ipsense-summary-latest.md',last_size:2841,
     last_error:'',writes:3,next_at:now+240};
+  // 1.1.15：运行日志导出走 r.text()，mock Response 补齐 text()
   function R(d){ return {ok:true,status:200,json:function(){return Promise.resolve(d);},
+                         text:function(){return Promise.resolve(
+                           typeof d==='string'?d:JSON.stringify(d,null,2));},
                          blob:function(){return Promise.resolve(new Blob(['x']));}}; }
   var cfg = {source_local_auth:true,source_local_web:true,source_router_syslog:true,
     source_knock:false,source_knock_app:false,
@@ -171,7 +174,9 @@ window.addEventListener('error',function(e){
     map_provider:'tencent',map_engine:'tmap',map_custom:[],
     map_keys:{tencent:'',amap:'',baidu:'',tianditu:''},
     summary_dir:'/vol1/1000/AIlogs',summary_enabled:true,summary_interval:5,
-    summary_range:'24h',summary:summaryStatus};
+    summary_range:'24h',summary:summaryStatus,
+    geo_verify_enabled:true,geo_verify_days:30,geo_verify_batch:60,
+    geo_verify_auto:true,geo_district_enabled:true};
   var trend=[]; for(var i=0;i<24;i++){
     var wave=Math.round(180+90*Math.sin(i/3)+40*Math.cos(i/1.7));
     trend.push({t:now-(24-i)*3600,all:wave+60,cn:Math.round(wave*0.32),
@@ -205,19 +210,27 @@ window.addEventListener('error',function(e){
             '德国 / Berlin','中国 / 广东省 / 深圳市','俄罗斯','中国 / 北京市'];
   var acts=['扫描探测 · GET 404 /.env','正常访问 · GET 200 /','密码认证失败 · 用户 root',
             '扫描探测 · GET 404 /wp-login.php','正常访问 · GET 200 /app/ipsense/'];
+  var diagText='IP 动态感知（ipsense）· 运行日志诊断包（离线预览）\n' +
+    '生成时间：2026-11-19 00:00:00\n' +
+    '说明：本文件已自动脱敏。地图 KEY / 令牌 / 口令已抹除；来访 IP 只保留前两段。\n\n' +
+    '1. 环境与应用状态\n  版本：1.1.15 · 运行中 · 数据源 3 路\n\n' +
+    '2. 主运行日志（尾部）\n  2026-11-19 00:00:01 INFO collector 已启动\n\n' +
+    '3. 数据源状态\n  本机 SSH 已读取 · 本机 Web 已读取 · 路由器 syslog 文件不存在\n';
   var live=[],rows=[];
   for(var j=0;j<24;j++){
     var ip=(j%3===0?'45.155.205.'+(j+10):(j%3===1?'218.106.90.'+(j+100):'192.168.3.'+(j+20)));
     var e={id:1000+j,ts:now-j*7,ip:ip,source:j%5===0?'local_auth':'local_web',
       country:j%3===0?'荷兰':'中国',province:j%3===0?'South Holland':(j%2?'安徽省':'广东省'),
-      city:'',scope:j%3===0?'overseas':(j%7===0?'private':'cn'),
+      city:'',district:(j%2===0?'蜀山区':''),
+      scope:j%3===0?'overseas':(j%7===0?'private':'cn'),
       verdict:j%4===0?'scan':(j%9===0?'attack':'normal'),
       action:acts[j%5],path:j%4===0?'/.env':'/app/ipsense/',port:5666,
       proto:j%5===0?'ssh':(j%3===0?'https':'web'),scheme_conf:'none',
       method:'GET',status:200,referer:'-',ua:'Mozilla/5.0',sess_id:'s'+j,layer:'web'};
     live.push(e);
     rows.push({id:1000+j,ts:e.ts,source:e.source,ip:ip,country:e.country,
-      province:e.province,city:'',scope:e.scope,port:e.port,service:'fnOS Web',
+      province:e.province,city:'',district:e.district,
+      scope:e.scope,port:e.port,service:'fnOS Web',
       action:e.action,verdict:e.verdict,path:e.path,lat:null,lng:null,isp:'',
       proto:e.proto,scheme_conf:e.scheme_conf,method:e.method,status:e.status,
       referer:e.referer,ua:e.ua,sess_id:e.sess_id,layer:e.layer});
@@ -252,13 +265,16 @@ window.addEventListener('error',function(e){
              {name:'curl · 未知系统',count:880,ips:12},{name:'程序客户端 · 未知系统',count:410,ips:8}]
   };
   // 1.1.2：固定全球视图，一份数据同时含境内（归并到「中国」）与境外国家
+  // 1.1.15：境内按省细分并带 scope，不再归并成一个「中国」气泡
   var geoAll={range:'24h',scope:'all',total:5159,regions:[
-    {name:'中国',count:4231,ips:134,lat:35.86,lng:104.20},
-    {name:'美国',count:420,ips:31,lat:39.83,lng:-98.58},
-    {name:'荷兰',count:286,ips:12,lat:52.13,lng:5.29},
-    {name:'德国',count:194,ips:9,lat:51.17,lng:10.45},
-    {name:'俄罗斯',count:158,ips:11,lat:61.52,lng:105.32},
-    {name:'新加坡',count:92,ips:6,lat:1.35,lng:103.82}
+    {name:'安徽省',count:2100,ips:62,lat:31.82,lng:117.23,scope:'cn'},
+    {name:'广东省',count:1400,ips:48,lat:23.13,lng:113.26,scope:'cn'},
+    {name:'北京市',count:731,ips:24,lat:39.90,lng:116.41,scope:'cn'},
+    {name:'美国',count:420,ips:31,lat:39.83,lng:-98.58,scope:'overseas'},
+    {name:'荷兰',count:286,ips:12,lat:52.13,lng:5.29,scope:'overseas'},
+    {name:'德国',count:194,ips:9,lat:51.17,lng:10.45,scope:'overseas'},
+    {name:'俄罗斯',count:158,ips:11,lat:61.52,lng:105.32,scope:'overseas'},
+    {name:'新加坡',count:92,ips:6,lat:1.35,lng:103.82,scope:'overseas'}
   ]};
   // 1.1.3：五卡放大面板的条目下钻详情（含来源 IP 明细，点 IP 会打开画像抽屉）
   var breakdown={ok:true,dim:'proto',name:'web',range:'24h',
@@ -353,7 +369,11 @@ window.addEventListener('error',function(e){
       return Promise.resolve({ok:true,status:200,blob:function(){
         return Promise.resolve(new Blob([summaryText],{type:'text/markdown'}));}});
     else if(u.indexOf('api/config')>=0) d={ok:true,data:cfg};
-    else if(u.indexOf('api/health')>=0) d={ok:true,version:'1.1.14'};
+    else if(u.indexOf('api/health')>=0) d={ok:true,version:'1.1.15'};
+    // 1.1.15：脱敏诊断包与区级手工补充
+    else if(u.indexOf('api/diag/export')>=0) d=diagText;
+    else if(u.indexOf('api/geo/district')>=0) d={ok:true,ip:'220.205.86.196',
+      district:'蜀山区',events_updated:3};
     else if(u.indexOf('api/locate')>=0) d={ok:true,ip:'220.205.86.196',proxy_ip:'203.10.99.50',
       has_proxy:true,geo_text:'中国 安徽 合肥 联通',
       online:{country:'中国',region:'Anhui Sheng',city:'Hefei',lat:31.8639,lng:117.2808,source:'ipwho.is'},

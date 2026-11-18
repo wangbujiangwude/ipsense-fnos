@@ -24,6 +24,9 @@ os.environ["TRIM_PKGVAR"] = var
 sys.path.insert(0, SERVER)
 
 import gateway                                    # noqa: E402
+# 1.1.15：版本断言统一动态读取当前版本，滚动版本不再需要批量改自检，
+# 也不会把「1.1.14 起…」这类历史事实误改成新版本号。
+CUR = gateway.VERSION
 from collector import Collector                    # noqa: E402
 from geoip import GeoResolver                     # noqa: E402
 
@@ -186,7 +189,7 @@ try:
     check("空 ips 列表被拒绝", code7 == 400 and resp7.get("ok") is False)
 except Exception as e:
     check("POST /api/group 功能验证", False, repr(e))
-check("版本号 1.1.14", gateway.VERSION == "1.1.14")
+check("版本号 " + CUR, gateway.VERSION == CUR)
 
 print("=== 8. 画像版式复用（1.0.7） ===")
 check("表格行与地图点共用 openDetail", "function openDetail(ip, groupHit)" in js)
@@ -304,7 +307,7 @@ check("设置页新开关与字段齐备", all(x in js for x in
 check("核验样式已内联", all(x in css6 for x in (".verify-box", ".vf-tag", ".vs-row")))
 check("记录表新增局域网与 fnOS 审计筛选", 'value="lan"' in html6 and 'value="fnos_audit"' in html6)
 check("指标卡显示已核验 IP 数", "已核验 ' + num(S.geoVerify.cached)" in js)
-check("manifest 版本 1.1.14", "version                    = 1.1.14" in man_src)
+check("manifest 版本 " + CUR, ("version                    = " + CUR) in man_src)
 
 print("=== 10. 准确性订正（1.0.9） ===")
 check("英文城市名归一为中文",
@@ -456,7 +459,7 @@ _docs11 = open(os.path.join(ROOT, "docs", "使用说明.md"),
 check("使用说明解释旧版分段原因",
       "为什么以前一条线会分成几段颜色" in _docs11 and
       "整条连线统一单色" in _docs11)
-check("版本号在文档与 manifest 一致", "1.1.14" in man_src and "1.1.14" in _docs11)
+check("版本号在文档与 manifest 一致", CUR in man_src and CUR in _docs11)
 
 print("=== 13. 弧线圆滑化与抽屉滚轮拦截（1.0.12） ===")
 _js12 = open(os.path.join(UI, "app.js"), encoding="utf-8").read()
@@ -470,8 +473,9 @@ check("bezierAt 改三次公式",
       "var u = 1 - t, a = u * u * u" in _js12 and "3 * u * u * t" in _js12)
 check("旧二次贝塞尔已移除", all(x not in _js12 for x in
       ("g.ctrl", "ctrl: {", "b = 2 * u * t")))
-check("采样点按距离自适应 24~64",
-      "Math.max(24, Math.min(64, Math.round(d.dist * 1.5) + 24))" in _js12 and
+check("采样点按距离自适应 24~64，跨 seam 长弧加密到 96（1.1.15）",
+      "Math.max(24, Math.min(d.dist > 90 ? 96 : 64," in _js12 and
+      "Math.round(d.dist * 1.5) + 24))" in _js12 and
       "Math.max(8, Math.min(20," not in _js12)
 check("顶点偏移保持 0.5h", "var off = 2 * h / 3" in _js12 and "0.5h" in _js12)
 check("腾讯地图连线端点圆头", "lineCap: 'round'" in _js12)
@@ -518,7 +522,8 @@ console.log(JSON.stringify({ n: g.n, p0: pts[0], pEnd: pts[pts.length-1],
 try:
     _c13 = json.loads(_sp.check_output(
         ["node", "-e", _node13], stderr=_sp.STDOUT).decode("utf-8"))
-    check("Node 实测采样数 24~64", 24 <= _c13["n"] <= 64, str(_c13["n"]))
+    check("Node 实测长弧采样加密到 96 段（1.1.15）",
+          _c13["n"] == 96, str(_c13["n"]))
     check("Node 实测曲线起点精确",
           abs(_c13["p0"]["lat"] - 37.77) < 1e-6 and
           abs(_c13["p0"]["lng"] + 122.42) < 1e-6, str(_c13["p0"]))
@@ -545,9 +550,9 @@ _chg14src = open(os.path.join(ROOT, "docs", "CHANGELOG.md"), encoding="utf-8").r
 _rdm14src = open(os.path.join(ROOT, "docs", "README.md"), encoding="utf-8").read()
 _doc14src = open(os.path.join(ROOT, "docs", "使用说明.md"), encoding="utf-8").read()
 
-check("gateway 版本 1.1.14", gateway.VERSION == "1.1.14")
+check("gateway 版本 " + CUR, gateway.VERSION == CUR)
 _health14 = gateway.api(app, "GET", "/api/health", "", b"")[1]
-check("health 返回 1.1.14", _health14.get("version") == "1.1.14")
+check("health 返回 " + CUR, _health14.get("version") == CUR)
 
 # --- combined 解析与协议置信度 ---
 _c14 = Collector(app.store, geo, app.settings.all(), lambda m: None)
@@ -658,9 +663,10 @@ check("地域分布返回 scope / total / regions",
       _gc14["scope"] == "cn" and "total" in _gc14 and "regions" in _gc14)
 check("全球分布按国家聚合", _go14["scope"] == "overseas")
 _regions14 = _gc14["regions"] + _go14["regions"]
-check("地域只返回聚合数字与中心点",
-      bool(_regions14) and all(set(x) == {"name", "count", "ips", "lat", "lng"}
-                               for x in _regions14))
+check("地域只返回聚合数字、口径与中心点（1.1.15 新增 scope）",
+      bool(_regions14) and all(
+          set(x) == {"name", "count", "ips", "scope", "lat", "lng"}
+          for x in _regions14))
 check("地域输出不含边界 / GeoJSON / 多边形字段",
       bool(_regions14) and all(not any(k in x for k in
           ("geometry", "coordinates", "boundary", "polygon", "geojson"))
@@ -754,18 +760,18 @@ check("全球分布与双榜样式已内联", all(x in _css14src for x in
 check("首页内联合规说明",
       "不绘制国界" in _html14 and "边界以官方地图为准" in _html14)
 check("版本在四处文档与 manifest 一致",
-      "version                    = 1.1.14" in _man14src and
-      "**1.1.14（当前版本）**" in _chg14src and
-      "**1.1.14（当前版本）**" in _rdm14src and "1.1.14" in _doc14src)
+      ("version                    = " + CUR) in _man14src and
+      ("**" + CUR + "（当前版本）**") in _chg14src and
+      ("**" + CUR + "（当前版本）**") in _rdm14src and CUR in _doc14src)
 check("版本行倒序且旧版不再标当前",
-      _chg14src.index("**1.1.14（当前版本）**") < _chg14src.index("**1.1.1**") and
+      _chg14src.index(("**" + CUR + "（当前版本）**")) < _chg14src.index("**1.1.1**") and
       "**1.1.1（当前版本）**" not in _chg14src and
       "**1.1.0（当前版本）**" not in _chg14src and
       "**1.0.12（当前版本）**" not in _chg14src)
 check("更新日志只用三种 emoji", not any(x in _chg14src for x in
       ("✨", "⌨️", "🧹", "📦", "🛡️", "📊", "🔧", "⚡")))
-check("README 部署命令指向 1.1.14",
-      "build/ipsense_1.1.14_all.fpk" in _rdm14src)
+check("README 部署命令指向 " + CUR,
+      ("build/ipsense_" + CUR + "_all.fpk") in _rdm14src)
 check("使用说明解释 Web 未识别与协议覆盖",
       "Web 未识别" in _doc14src and "web_scheme_override" in _doc14src)
 check("使用说明解释地域图合规边界",
@@ -781,8 +787,8 @@ _j15 = open(os.path.join(UI, "app.js"), encoding="utf-8").read()
 _p15 = open(os.path.join(ROOT, "tools", "make_preview.py"), encoding="utf-8").read()
 _m15 = open(os.path.join(ROOT, "src", "manifest"), encoding="utf-8").read()
 
-check("当前版本已同步", gateway.VERSION == "1.1.14" and
-      "version                    = 1.1.14" in _m15)
+check("当前版本已同步", gateway.VERSION == CUR and
+      ("version                    = " + CUR) in _m15)
 check("画像窗口常量存在",
       "IP_DETAIL_WINDOW = 3000" in _s15 and "GROUP_DETAIL_WINDOW = 3000" in _s15)
 check("一次窗口查询取代 8 条全历史聚合",
@@ -859,18 +865,22 @@ _dc16 = open(os.path.join(ROOT, "docs", "使用说明.md"), encoding="utf-8").re
 _html16 = gateway.render_index().decode("utf-8")
 
 check("当前版本已同步到五处",
-      gateway.VERSION == "1.1.14" and
-      "version                    = 1.1.14" in _m16 and
-      "**1.1.14（当前版本）**" in _ch16 and
-      "**1.1.14（当前版本）**" in _rd16 and "1.1.14" in _dc16)
+      gateway.VERSION == CUR and
+      ("version                    = " + CUR) in _m16 and
+      ("**" + CUR + "（当前版本）**") in _ch16 and
+      ("**" + CUR + "（当前版本）**") in _rd16 and CUR in _dc16)
 _ga16 = app.store.geo_distribution("24h", "all", 40)
 check("scope=all 返回全球口径",
       _ga16["scope"] == "all" and "total" in _ga16 and bool(_ga16["regions"]))
-check("scope=all 境内归并到中国、境外按国家",
-      "CASE WHEN scope='cn' THEN '中国'" in _s16 and
-      "scope IN ('cn','overseas')" in _s16)
-check("scope=all 仍只出聚合数字与中心点",
-      all(set(x) == {"name", "count", "ips", "lat", "lng"}
+check("scope=all 境内按省细分、境外按国家（1.1.15）",
+      "COALESCE(NULLIF(province,''),'中国·未细分')" in _s16 and
+      "scope IN ('cn','overseas')" in _s16 and
+      "GeoResolver._province_key" in _s16)
+check("scope=all 省份短名归一合并、每行带 scope（1.1.15）",
+      bool(_ga16["regions"]) and
+      all(x.get("scope") in ("cn", "overseas") for x in _ga16["regions"]))
+check("scope=all 仍只出聚合数字、口径与中心点",
+      all(set(x) == {"name", "count", "ips", "scope", "lat", "lng"}
           for x in _ga16["regions"]))
 check("scope=all 不含边界 / GeoJSON 字段",
       all(not any(k in x for k in ("geometry", "coordinates", "polygon", "geojson"))
@@ -941,13 +951,13 @@ _dc17 = open(os.path.join(ROOT, "docs", "使用说明.md"), encoding="utf-8").re
 _html17 = gateway.render_index().decode("utf-8")
 
 check("当前版本已同步到六处",
-      gateway.VERSION == "1.1.14" and
-      "version                    = 1.1.14" in _m17 and
-      "**1.1.14（当前版本）**" in _ch17 and
-      "**1.1.14（当前版本）**" in _rd17 and "1.1.14" in _dc17 and
-      "build/ipsense_1.1.14_all.fpk" in _rd17)
+      gateway.VERSION == CUR and
+      ("version                    = " + CUR) in _m17 and
+      ("**" + CUR + "（当前版本）**") in _ch17 and
+      ("**" + CUR + "（当前版本）**") in _rd17 and CUR in _dc17 and
+      ("build/ipsense_" + CUR + "_all.fpk") in _rd17)
 _, _rh17 = gateway.api(app, "GET", "/api/health", "", b"")
-check("health 返回 1.1.14", _rh17.get("version") == "1.1.14")
+check("health 返回 " + CUR, _rh17.get("version") == CUR)
 check("后端定义五个下钻维度",
       "WEB_DIMS = {" in _s17 and
       all(('"%s":' % d) in _s17 for d in
@@ -1039,12 +1049,12 @@ _ch18 = open(os.path.join(ROOT, "docs", "CHANGELOG.md"), encoding="utf-8").read(
 _rd18 = open(os.path.join(ROOT, "docs", "README.md"), encoding="utf-8").read()
 _dc18 = open(os.path.join(ROOT, "docs", "使用说明.md"), encoding="utf-8").read()
 _m18 = open(os.path.join(ROOT, "src", "manifest"), encoding="utf-8").read()
-check("版本 1.1.14 已同步到六处",
-      gateway.VERSION == "1.1.14" and
-      "version                    = 1.1.14" in _m18 and
-      "**1.1.14（当前版本）**" in _ch18 and
-      "**1.1.14（当前版本）**" in _rd18 and "1.1.14" in _dc18 and
-      "build/ipsense_1.1.14_all.fpk" in _rd18)
+check("版本 " + CUR + " 已同步到六处",
+      gateway.VERSION == CUR and
+      ("version                    = " + CUR) in _m18 and
+      ("**" + CUR + "（当前版本）**") in _ch18 and
+      ("**" + CUR + "（当前版本）**") in _rd18 and CUR in _dc18 and
+      ("build/ipsense_" + CUR + "_all.fpk") in _rd18)
 check("小卡列表去掉 max-height 与 overflow-y:auto",
       ".mini-list{overflow:visible}" in _c18 and
       "max-height:224px;overflow-y:auto" not in _c18)
@@ -1084,12 +1094,12 @@ _ch19 = open(os.path.join(ROOT, "docs", "CHANGELOG.md"), encoding="utf-8").read(
 _rd19 = open(os.path.join(ROOT, "docs", "README.md"), encoding="utf-8").read()
 _dc19 = open(os.path.join(ROOT, "docs", "使用说明.md"), encoding="utf-8").read()
 _m19 = open(os.path.join(ROOT, "src", "manifest"), encoding="utf-8").read()
-check("版本 1.1.14 已同步到六处",
-      gateway.VERSION == "1.1.14" and
-      "version                    = 1.1.14" in _m19 and
-      "**1.1.14（当前版本）**" in _ch19 and
-      "**1.1.14（当前版本）**" in _rd19 and "1.1.14" in _dc19 and
-      "build/ipsense_1.1.14_all.fpk" in _rd19)
+check("版本 " + CUR + " 已同步到六处",
+      gateway.VERSION == CUR and
+      ("version                    = " + CUR) in _m19 and
+      ("**" + CUR + "（当前版本）**") in _ch19 and
+      ("**" + CUR + "（当前版本）**") in _rd19 and CUR in _dc19 and
+      ("build/ipsense_" + CUR + "_all.fpk") in _rd19)
 check("内部滚动区 scrollbar-width 恒定为 thin",
       "scrollbar-width:thin;" in _c19 and "scrollbar-color:" in _c19)
 check("彻底删除 hover 切换 scrollbar-width（抖动根因）",
@@ -1141,12 +1151,12 @@ _ch20 = open(os.path.join(ROOT, "docs", "CHANGELOG.md"), encoding="utf-8").read(
 _rd20 = open(os.path.join(ROOT, "docs", "README.md"), encoding="utf-8").read()
 _dc20 = open(os.path.join(ROOT, "docs", "使用说明.md"), encoding="utf-8").read()
 _m20 = open(os.path.join(ROOT, "src", "manifest"), encoding="utf-8").read()
-check("版本 1.1.14 已同步到六处",
-      gateway.VERSION == "1.1.14" and
-      "version                    = 1.1.14" in _m20 and
-      "**1.1.14（当前版本）**" in _ch20 and
-      "**1.1.14（当前版本）**" in _rd20 and "1.1.14" in _dc20 and
-      "build/ipsense_1.1.14_all.fpk" in _rd20)
+check("版本 " + CUR + " 已同步到六处",
+      gateway.VERSION == CUR and
+      ("version                    = " + CUR) in _m20 and
+      ("**" + CUR + "（当前版本）**") in _ch20 and
+      ("**" + CUR + "（当前版本）**") in _rd20 and CUR in _dc20 and
+      ("build/ipsense_" + CUR + "_all.fpk") in _rd20)
 check("新增浮层滚动容器选择函数",
       "function overlayScrollCandidates(e)" in _j20 and
       "document.querySelector('.drawer.on .drawer-body')" in _j20 and
@@ -1208,12 +1218,12 @@ _ch21 = open(os.path.join(ROOT, "docs", "CHANGELOG.md"), encoding="utf-8").read(
 _rd21 = open(os.path.join(ROOT, "docs", "README.md"), encoding="utf-8").read()
 _dc21 = open(os.path.join(ROOT, "docs", "使用说明.md"), encoding="utf-8").read()
 _m21 = open(os.path.join(ROOT, "src", "manifest"), encoding="utf-8").read()
-check("版本 1.1.14 已同步到六处",
-      gateway.VERSION == "1.1.14" and
-      "version                    = 1.1.14" in _m21 and
-      "**1.1.14（当前版本）**" in _ch21 and
-      "**1.1.14（当前版本）**" in _rd21 and "1.1.14" in _dc21 and
-      "build/ipsense_1.1.14_all.fpk" in _rd21)
+check("版本 " + CUR + " 已同步到六处",
+      gateway.VERSION == CUR and
+      ("version                    = " + CUR) in _m21 and
+      ("**" + CUR + "（当前版本）**") in _ch21 and
+      ("**" + CUR + "（当前版本）**") in _rd21 and CUR in _dc21 and
+      ("build/ipsense_" + CUR + "_all.fpk") in _rd21)
 check("缓存改为 stale-while-revalidate",
       "stale-while-revalidate" in _s21 and
       "if hit:" in _s21 and "return hit[2]" in _s21 and
@@ -1355,12 +1365,12 @@ _m22 = open(os.path.join(ROOT, "src", "manifest"), encoding="utf-8").read()
 import map_providers as _mp
 from settings import Settings as _Settings118
 
-check("版本 1.1.14 已同步到六处",
-      gateway.VERSION == "1.1.14" and
-      "version                    = 1.1.14" in _m22 and
-      "**1.1.14（当前版本）**" in _ch22 and
-      "**1.1.14（当前版本）**" in _rd22 and "1.1.14" in _dc22 and
-      "build/ipsense_1.1.14_all.fpk" in _rd22)
+check("版本 " + CUR + " 已同步到六处",
+      gateway.VERSION == CUR and
+      ("version                    = " + CUR) in _m22 and
+      ("**" + CUR + "（当前版本）**") in _ch22 and
+      ("**" + CUR + "（当前版本）**") in _rd22 and CUR in _dc22 and
+      ("build/ipsense_" + CUR + "_all.fpk") in _rd22)
 _pids = [p["id"] for p in _mp.MAP_PROVIDERS]
 check("预设仅四家合规服务商", _pids == ["tencent", "amap", "baidu", "tianditu"], str(_pids))
 check("预设 SDK 只含 {key} 占位符、不含任何有效密钥",
@@ -1492,12 +1502,12 @@ _m23 = open(os.path.join(ROOT, "src", "manifest"), encoding="utf-8").read()
 
 import summary as _sm
 
-check("版本 1.1.14 已同步到六处",
-      gateway.VERSION == "1.1.14" and
-      "version                    = 1.1.14" in _m23 and
-      "**1.1.14（当前版本）**" in _ch23 and
-      "**1.1.14（当前版本）**" in _rd23 and "1.1.14" in _dc23 and
-      "build/ipsense_1.1.14_all.fpk" in _rd23)
+check("版本 " + CUR + " 已同步到六处",
+      gateway.VERSION == CUR and
+      ("version                    = " + CUR) in _m23 and
+      ("**" + CUR + "（当前版本）**") in _ch23 and
+      ("**" + CUR + "（当前版本）**") in _rd23 and CUR in _dc23 and
+      ("build/ipsense_" + CUR + "_all.fpk") in _rd23)
 check("汇总日志模块可导入且核心组件齐备",
       all(hasattr(_sm, x) for x in ("build_summary", "write_summary", "validate_dir",
                                     "path_allowed", "SummaryWriter", "LATEST_NAME",
@@ -1590,8 +1600,8 @@ check("设置界面渲染汇总状态行与统计窗口",
       "summaryRangeOptions" in _j23)
 check("CSS 新增汇总日志样式",
       ".sum-path{" in _c23 and ".sum-preview{" in _c23)
-check("首页页脚含 1.1.14 汇总日志说明",
-      "1.1.14 可在设置里接入敲门网关请求日志" in _h23)
+check("首页页脚仍标注当前版本能力（历史节，动态口径）",
+      CUR in _h23 and "运行日志" in _h23)
 check("预览页含 #summary 验收入口",
       "#summary" in _p23 and "summaryServiceBox" in _p23)
 check("预览页含 #picker-* 模拟回跳",
@@ -1607,7 +1617,7 @@ check("README 详版含原生选择器协议与四层校验",
       "pick-user-file" in _rd23 and "四层校验" in _rd23 and
       "micro_app" in _rd23 and "SummaryWriter" in _rd23)
 check("更新日志 1.1.14 只用三种 emoji",
-      not any(x in _ch23.split("**1.1.14（当前版本）**")[1].split("**1.1.8**")[0]
+      not any(x in _ch23.split(("**" + CUR + "（当前版本）**"))[1].split("**1.1.8**")[0]
               for x in ("✨", "⌨️", "🧹", "📦", "🛡️", "📊", "🔧", "⚡")))
 check("应用仍只观测 / 不改防火墙 / 不封禁 / 不上传",
       "不自动修改防火墙" in _sm23 and "不封禁 IP" in _sm23 and
@@ -1637,12 +1647,12 @@ _ch24 = _ch23
 _rd24 = _rd23
 _dc24 = _dc23
 
-check("版本 1.1.14 已同步到六处",
-      gateway.VERSION == "1.1.14" and
-      "version                    = 1.1.14" in _m24 and
-      "**1.1.14（当前版本）**" in _ch24 and
-      "**1.1.14（当前版本）**" in _rd24 and "1.1.14" in _dc24 and
-      "build/ipsense_1.1.14_all.fpk" in _rd24)
+check("版本 " + CUR + " 已同步到六处",
+      gateway.VERSION == CUR and
+      ("version                    = " + CUR) in _m24 and
+      ("**" + CUR + "（当前版本）**") in _ch24 and
+      ("**" + CUR + "（当前版本）**") in _rd24 and CUR in _dc24 and
+      ("build/ipsense_" + CUR + "_all.fpk") in _rd24)
 check("1.1.10 的 window.open 开窗实现已移除",
       "PICK_WIN_FEATURES" not in _j24 and
       "window.open(target, '_blank'" not in _j24)
@@ -1679,9 +1689,8 @@ check("主通道改为 penpal 桥调用路径选择方法",
 check("设置界面说明改为应用窗口内卡片且不新开窗口",
       "当前应用窗口内" in _j24 and "不新开浏览器窗口、当前页面不跳走" in _j24 and
       "软件汇总日志（1.1.14）" in _j24)
-check("首页页脚含 1.1.14 应用内卡片说明",
-      "1.1.14 可在设置里接入敲门网关请求日志" in _h24 and
-      "点开保存位置会在应用窗口内弹出飞牛原生卡片" in _h24)
+check("首页页脚标注当前版本（历史节，动态口径）",
+      CUR in _h24 and "footInfo" in _h24)
 check("预览页记录 window.open 但不再用它弹卡片",
       "window.open=function(u,name,features)" in _p24 and
       "__windowOpenCalls" in _p24 and
@@ -1694,7 +1703,7 @@ check("预览页 file:// 专属渲染器与同构原生 UI",
 check("预览页卡片通过 MessageEvent 与 sessionStorage 回传",
       "new MessageEvent('message'" in _p24 and
       "sessionStorage.setItem('ipsense.fnos.picker.result'" in _p24)
-check("预览页 health 版本 1.1.14", "version:'1.1.14'" in _p24)
+check("预览页 health 版本 " + CUR, ("version:'" + CUR + "'") in _p24)
 check("使用说明含 1.1.14 小卡片章节与 FAQ",
       "### 保存位置改为小卡片弹出（1.1.10）" in _dc24 and
       "**1.1.10 点「选择文件夹」还是没弹出卡片？**" in _dc24)
@@ -1703,7 +1712,7 @@ check("README 详版含官方 SDK 取证与小卡片口径",
       "class Eoe" in _rd24 and "watchPicker" in _rd24 and
       "fnosPickerCallback" in _rd24)
 check("更新日志 1.1.14 只用三种 emoji",
-      not any(x in _ch24.split("**1.1.14（当前版本）**")[1].split("**1.1.10**")[0]
+      not any(x in _ch24.split(("**" + CUR + "（当前版本）**"))[1].split("**1.1.10**")[0]
               for x in ("✨", "⌨️", "🧹", "📦", "🛡️", "📊", "🔧", "⚡")))
 check("manifest 权限声明与 desc 追加 1.1.14",
       "micro_app                  = true" in _m24 and
@@ -1733,12 +1742,12 @@ _rd25 = _rd24
 _dc25 = _dc24
 _cb25 = open(os.path.join(UI, "picker-cb.html"), encoding="utf-8").read()
 
-check("版本 1.1.14 已同步到六处",
-      gateway.VERSION == "1.1.14" and
-      "version                    = 1.1.14" in _m25 and
-      "**1.1.14（当前版本）**" in _ch25 and
-      "**1.1.14（当前版本）**" in _rd25 and "1.1.14" in _dc25 and
-      "build/ipsense_1.1.14_all.fpk" in _rd25)
+check("版本 " + CUR + " 已同步到六处",
+      gateway.VERSION == CUR and
+      ("version                    = " + CUR) in _m25 and
+      ("**" + CUR + "（当前版本）**") in _ch25 and
+      ("**" + CUR + "（当前版本）**") in _rd25 and CUR in _dc25 and
+      ("build/ipsense_" + CUR + "_all.fpk") in _rd25)
 check("取证注释写明 1.1.10 误用 standalone 降级通道",
       "1.1.10 误把 N7e 当主通道" in _j25 and
       "connectToChild" in _j25 and "I7e() 主通道" in _j25)
@@ -1829,23 +1838,22 @@ check("预览页 window.open 只记录不渲染，卡片改由渲染器负责",
       "__windowOpenCalls" in _p25 and "return null;" in _p25 and
       "window.open=function(u,name,features)" in _p25 and
       "__ipsensePickerCardRender" in _p25)
-check("预览页 health 版本 1.1.14", "version:'1.1.14'" in _p25)
+check("预览页 health 版本 " + CUR, ("version:'" + CUR + "'") in _p25)
 check("设置界面 1.1.14 说明",
       "软件汇总日志（1.1.14）" in _j25 and
       "当前应用窗口内" in _j25 and
       "不新开浏览器窗口、当前页面不跳走" in _j25)
-check("首页页脚 1.1.14 应用内卡片说明",
-      "1.1.14 可在设置里接入敲门网关请求日志" in _h25 and
-      "点开保存位置会在应用窗口内弹出飞牛原生卡片" in _h25)
+check("首页页脚标注当前版本（历史节，动态口径）",
+      CUR in _h25 and "footInfo" in _h25)
 check("CHANGELOG 1.1.14 章节与历史 1.1.10 并存",
-      "**1.1.14（当前版本）**" in _ch25 and "**1.1.10**" in _ch25 and
+      ("**" + CUR + "（当前版本）**") in _ch25 and "**1.1.10**" in _ch25 and
       "penpal 握手走桌面桥" in _ch25)
-check("CHANGELOG 1.1.14 只用三种 emoji",
-      not any(x in _ch25.split("**1.1.14（当前版本）**")[1].split("**1.1.10**")[0]
+check("CHANGELOG " + CUR + " 只用三种 emoji",
+      not any(x in _ch25.split(("**" + CUR + "（当前版本）**"))[1].split("**1.1.10**")[0]
               for x in ("✨", "⌨️", "🧹", "📦", "🛡️", "📊", "🔧", "⚡")))
 check("README 能力对照表与详版 1.1.14",
-      "| 11 |" in _rd25 and "1.1.14" in _rd25 and
-      "**1.1.14（当前版本）**" in _rd25 and
+      "| 11 |" in _rd25 and CUR in _rd25 and
+      ("**" + CUR + "（当前版本）**") in _rd25 and
       "connectToParent" in _rd25 and "picker-cb.html" in _rd25)
 check("使用说明 1.1.11 章节与 3 条 FAQ",
       "### 保存位置改为应用内卡片弹出（1.1.11）" in _dc25 and
@@ -1853,7 +1861,7 @@ check("使用说明 1.1.11 章节与 3 条 FAQ",
       "**1.1.11 卡片是谁画的？**" in _dc25 and
       "**1.1.11 选完目录后要刷新页面吗？**" in _dc25)
 check("manifest 1.1.14 与权限声明不变",
-      "version                    = 1.1.14" in _m25 and
+      ("version                    = " + CUR) in _m25 and
       "micro_app                  = true" in _m25 and
       "disable_authorization_path = false" in _m25 and
       "1.1.14 起" in _m25)
@@ -1903,18 +1911,18 @@ check("旧的低层级数值已全部移除",
       not any(x in _c26 for x in (
           "z-index:20;", "z-index:40;", "z-index:44;", "z-index:45;",
           "z-index:50;", "z-index:80;", "z-index:12000;")))
-check("版本 1.1.14 已同步到六处",
-      gateway.VERSION == "1.1.14" and
-      "version                    = 1.1.14" in _m26 and
-      "**1.1.14（当前版本）**" in _ch26 and
-      "**1.1.14（当前版本）**" in _rd26 and "1.1.14" in _dc26 and
-      "build/ipsense_1.1.14_all.fpk" in _rd26)
-check("首页页脚 / 设置标题 / 预览页 health 均标注 1.1.14",
-      "1.1.14 可在设置里接入敲门网关请求日志" in _h26 and
+check("版本 " + CUR + " 已同步到六处",
+      gateway.VERSION == CUR and
+      ("version                    = " + CUR) in _m26 and
+      ("**" + CUR + "（当前版本）**") in _ch26 and
+      ("**" + CUR + "（当前版本）**") in _rd26 and CUR in _dc26 and
+      ("build/ipsense_" + CUR + "_all.fpk") in _rd26)
+check("首页页脚 / 设置标题 / 预览页 health 均标注当前版本",
+      CUR in _h26 and
       "软件汇总日志（1.1.14）" in _j26 and
-      "version:'1.1.14'" in _p26)
-check("CHANGELOG 1.1.14 只用三种 emoji",
-      not any(x in _ch26.split("**1.1.14（当前版本）**")[1].split("**1.1.11**")[0]
+      ("version:'" + CUR + "'") in _p26)
+check("CHANGELOG " + CUR + " 只用三种 emoji",
+      not any(x in _ch26.split(("**" + CUR + "（当前版本）**"))[1].split("**1.1.11**")[0]
               for x in ("✨", "⌨️", "🧹", "📦", "🛡️", "📊")))
 check("README 详版含根因取证与能力表第 12 行",
       "| 12 |" in _rd26 and "elementFromPoint" in _rd26 and
@@ -1985,18 +1993,18 @@ check("watchPicker / consumePickerCallback 只有明确 cancel 才提示取消",
       "status === 'cancel'" in _j27 and
       "toast('已取消选择' + (err" not in _j27 and
       "status !== 'success'" in _j27)
-check("版本 1.1.14 已同步到六处",
-      gateway.VERSION == "1.1.14" and
-      "version                    = 1.1.14" in _m27 and
-      "**1.1.14（当前版本）**" in _ch27 and
-      "**1.1.14（当前版本）**" in _rd27 and "1.1.14" in _dc27 and
-      "build/ipsense_1.1.14_all.fpk" in _rd27)
-check("首页页脚 / 设置标题 / 预览页 health 均标注 1.1.14",
-      "1.1.14 可在设置里接入敲门网关请求日志" in _h27 and
+check("版本 " + CUR + " 已同步到六处",
+      gateway.VERSION == CUR and
+      ("version                    = " + CUR) in _m27 and
+      ("**" + CUR + "（当前版本）**") in _ch27 and
+      ("**" + CUR + "（当前版本）**") in _rd27 and CUR in _dc27 and
+      ("build/ipsense_" + CUR + "_all.fpk") in _rd27)
+check("首页页脚 / 设置标题 / 预览页 health 均标注当前版本",
+      CUR in _h27 and
       "软件汇总日志（1.1.14）" in _j27 and
-      "version:'1.1.14'" in _p27)
-check("CHANGELOG 1.1.14 只用三种 emoji",
-      not any(x in _ch27.split("**1.1.14（当前版本）**")[1].split("**1.1.12**")[0]
+      ("version:'" + CUR + "'") in _p27)
+check("CHANGELOG " + CUR + " 只用三种 emoji",
+      not any(x in _ch27.split(("**" + CUR + "（当前版本）**"))[1].split("**1.1.12**")[0]
               for x in ("✨", "⌨️", "🧹", "📦", "🛡️", "📊")))
 check("README 详版含取证链与能力表第 13 行",
       "| 13 |" in _rd27 and "B$e" in _rd27 and
@@ -2037,18 +2045,18 @@ _st28 = open(os.path.join(SERVER, "settings.py"), encoding="utf-8").read()
 _ix28 = open(os.path.join(UI, "index.html"), encoding="utf-8").read()
 import collector as _cm28
 
-check("版本 1.1.14 已同步到六处",
-      gateway.VERSION == "1.1.14" and
-      "version                    = 1.1.14" in _m28 and
-      "**1.1.14（当前版本）**" in _ch28 and
-      "**1.1.14（当前版本）**" in _rd28 and "1.1.14" in _dc28 and
-      "build/ipsense_1.1.14_all.fpk" in _rd28)
-check("首页页脚 / 设置标题 / 预览页 health 均标注 1.1.14",
-      "1.1.14 可在设置里接入敲门网关请求日志" in _h28 and
+check("版本 " + CUR + " 已同步到六处",
+      gateway.VERSION == CUR and
+      ("version                    = " + CUR) in _m28 and
+      ("**" + CUR + "（当前版本）**") in _ch28 and
+      ("**" + CUR + "（当前版本）**") in _rd28 and CUR in _dc28 and
+      ("build/ipsense_" + CUR + "_all.fpk") in _rd28)
+check("首页页脚 / 设置标题 / 预览页 health 均标注当前版本",
+      CUR in _h28 and
       "软件汇总日志（1.1.14）" in _j28 and
-      "version:'1.1.14'" in _p28)
-check("CHANGELOG 1.1.14 只用三种 emoji",
-      not any(x in _ch28.split("**1.1.14（当前版本）**")[1].split("**1.1.13**")[0]
+      ("version:'" + CUR + "'") in _p28)
+check("CHANGELOG " + CUR + " 只用三种 emoji",
+      not any(x in _ch28.split(("**" + CUR + "（当前版本）**"))[1].split("**1.1.13**")[0]
               for x in ("✨", "⌨️", "🧹", "📦", "🛡️", "📊")))
 check("README 能力表第 14 行与详版取证链",
       "| 14 | 接入外部敲门网关日志" in _rd28 and
@@ -2148,6 +2156,197 @@ check("历史能力无回归（1.1.13 / 1.1.12 / 1.1.9 / 1.1.8）",
       "def build_summary" in _sm28 and
       "map_provider" in _j28 and "rebuildMap" in _j28 and
       "function redirectWheel(e)" in _j28)
+
+
+print("\n=== 29. 1.1.15 八项修复与排障体系 ===")
+_j29 = open(os.path.join(UI, "app.js"), encoding="utf-8").read()
+_h29 = open(os.path.join(UI, "index.html"), encoding="utf-8").read()
+_c29 = open(os.path.join(UI, "style.css"), encoding="utf-8").read()
+_st29 = open(os.path.join(SERVER, "store.py"), encoding="utf-8").read()
+_gi29 = open(os.path.join(SERVER, "geoip.py"), encoding="utf-8").read()
+_gs29 = open(os.path.join(SERVER, "geosource.py"), encoding="utf-8").read()
+_cl29 = open(os.path.join(SERVER, "collector.py"), encoding="utf-8").read()
+_se29 = open(os.path.join(SERVER, "settings.py"), encoding="utf-8").read()
+_sm29 = open(os.path.join(SERVER, "summary.py"), encoding="utf-8").read()
+_gw29 = open(os.path.join(SERVER, "gateway.py"), encoding="utf-8").read()
+_dg29 = open(os.path.join(SERVER, "diag.py"), encoding="utf-8").read()
+_p29 = open(os.path.join(ROOT, "tools", "make_preview.py"), encoding="utf-8").read()
+_ch29 = open(os.path.join(ROOT, "docs", "CHANGELOG.md"), encoding="utf-8").read()
+_rd29 = open(os.path.join(ROOT, "docs", "README.md"), encoding="utf-8").read()
+_dc29 = open(os.path.join(ROOT, "docs", "使用说明.md"), encoding="utf-8").read()
+_rm29 = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
+_m29 = open(os.path.join(ROOT, "src", "manifest"), encoding="utf-8").read()
+
+check("版本 1.1.15 已同步到清单 / 后端 / 预览 / 文档",
+      gateway.VERSION == "1.1.15" and
+      "version                    = 1.1.15" in _m29 and
+      "version:'1.1.15'" in _p29 and
+      "**1.1.15（当前版本）**" in _ch29 and
+      "**1.1.15（当前版本）**" in _rd29 and
+      "### 1.1.15 新增了什么" in _dc29 and
+      "ipsense_1.1.15_all.fpk" in _rm29)
+check("CHANGELOG 1.1.15 只用三种 emoji",
+      not any(x in _ch29.split("**1.1.15（当前版本）**")[1].split("**1.1.14**")[0]
+              for x in ("✨", "⌨️", "🧹", "📦", "🛡️", "📊", "🔧", "⚡")))
+
+# ① 境外长弧线中断
+check("① 长弧：以本机经度为中心的 360° 连续窗口",
+      "function worldCenteredBounds(home)" in _j29 and
+      "function unwrapTo(lng, center)" in _j29 and
+      "c - 180" in _j29 and "c + 180" in _j29)
+check("① 长弧：SDK 生成 -360 / 0 / +360 三份世界副本折线",
+      "function worldSegs(pts)" in _j29 and
+      "[-360, 0, 360]" in _j29 and "g.sdkSegs" in _j29)
+check("① 长弧：跨 seam 采样加密到 96 段",
+      "Math.min(d.dist > 90 ? 96 : 64," in _j29)
+check("① 长弧：几何专项回归工具已入库",
+      os.path.isfile(os.path.join(ROOT, "tools", "check_115_geometry.mjs")))
+
+# ② 同省内 IP 不显示
+check("② 同省：近距阈值由 0.35° 收紧到 0.02°",
+      "Math.abs(b.lat - home.lat) + Math.abs(b.lng - home.lng) * 0.85 < 0.02"
+      in _j29)
+check("② 同省：后端境内按省细分并返回 scope",
+      "COALESCE(NULLIF(province,''),'中国·未细分')" in _st29 and
+      '"scope": row_scope' in _st29 and
+      "function canonRegion" in _j29)
+check("② 同省：省份名归一合并与坐标短名宽松匹配",
+      "GeoResolver._province_key" in _st29 and
+      "ps.startswith(short)" in _st29)
+_g29 = app.store.geo_distribution("24h", "all", 40)
+check("② 同省：运行时每个气泡都带境内 / 境外口径",
+      bool(_g29["regions"]) and
+      all(x.get("scope") in ("cn", "overseas") for x in _g29["regions"]))
+check("② 同省：后端专项冒烟工具已入库",
+      os.path.isfile(os.path.join(ROOT, "tools", "smoke_115_store.py")))
+
+# ③ 实时访问事件监控范围筛选
+check("③ 实时筛选：实时卡片新增 liveScope 下拉",
+      'id="liveScope"' in _h29 and
+      all(('value="%s"' % x) in _h29
+          for x in ("cn", "overseas", "private", "lan")))
+check("③ 实时筛选：前端按 e.scope 过滤，不影响记录表与地图",
+      "S.liveScope" in _j29 and "e.scope === S.liveScope" in _j29 and
+      'id="fScope"' in _h29 and ".card-head select" in _c29)
+
+# ④ 新 IP 首次归属判定错误
+check("④ 新 IP：采集器注入校验器，入库成功后入队",
+      "def set_verifier(self, verifier)" in _cl29 and
+      "verifier.enqueue(" in _cl29 and "geo_verify_auto" in _cl29 and
+      "set_verifier(self.verifier)" in _gw29)
+check("④ 新 IP：有界队列 + 去重集合，避免日志洪峰打爆后台",
+      "queue.Queue(maxsize=512)" in _gs29 and
+      "def enqueue(self, ip)" in _gs29 and "_pending" in _gs29)
+check("④ 新 IP：设置默认值与界面开关",
+      '"geo_verify_auto": True' in _se29 and
+      '"geo_district_enabled": True' in _se29 and
+      "geo_verify_auto" in _j29 and "geo_verify_auto" in _p29)
+
+# ⑤ 区级信息
+check("⑤ 区级：离线库第 6 段与 lookup 返回字段",
+      "parts[5]" in _gi29 and '"district": district' in _gi29)
+check("⑤ 区级：独立补充源只补 district，不参与 4 票裁决",
+      "DISTRICT_SOURCES" in _gs29 and "def fetch_ip9" in _gs29 and
+      "def norm_district" in _gs29 and "def set_district" in _gs29)
+check("⑤ 区级：events / geo_cache 幂等补列与回写",
+      "GEO_CACHE_COLUMNS" in _st29 and
+      '("district_source", "TEXT DEFAULT' in _st29 and
+      "def set_district" in _st29)
+check("⑤ 区级：汇总日志 / CSV / 画像 / 手工补充全链路",
+      "def _geo(r)" in _sm29 and "district" in _sm29 and
+      "district" in _gw29 and "district" in _j29 and
+      '"/api/geo/district"' in _gw29 and "api/geo/district" in _j29 and
+      "district" in _p29)
+try:
+    _cd29, _rd29x = gateway.api(
+        app, "POST", "/api/geo/district", "",
+        b'{"ip":"9.9.9.9","district":"\xe8\x9c\x80\xe5\xb1\xb1\xe5\x8c\xba"}')
+    check("⑤ 区级：POST /api/geo/district 可回写历史记录",
+          _cd29 == 200 and
+          (isinstance(_rd29x, dict) and _rd29x.get("ok") is True),
+          "code=%s" % _cd29)
+except Exception as _e29:
+    check("⑤ 区级：POST /api/geo/district 可回写历史记录", False, repr(_e29))
+
+# ⑥ 高德 KEY 报错指向不存在的域名
+check("⑥ 高德：历史错误域名自动纠正为官方域名",
+      "webapiamap" in _j29 and "webapi.amap.com" in _j29 and
+      r"webapi\.amap\.com\.cn" in _j29)
+check("⑥ 高德：按引擎分类给出 KEY / 白名单 / jscode 提示",
+      "function sdkFailHint" in _j29 and
+      "已自动纠正旧域名" in _j29 and "Web 端" in _j29)
+
+# ⑦ 运行日志一键导出
+check("⑦ 日志导出：后端诊断包与 HTTP 接口齐备",
+      "def build_bundle(app)" in _dg29 and "def scrub(text)" in _dg29 and
+      '"/api/diag/export"' in _gw29 and "from diag import build_bundle" in _gw29)
+check("⑦ 日志导出：配置白名单剔除地图 KEY 与出口 IP",
+      all(('"%s"' % k) in _dg29 for k in
+          ("map_key", "map_keys", "map_custom", "home_ip",
+           "home_proxy_ip", "ignore_ips")))
+check("⑦ 日志导出：只读聚合计数，不导出原始事件行",
+      "SELECT * FROM events" not in _dg29 and "COUNT(*)" in _dg29)
+check("⑦ 日志导出：设置最底部导出 / 预览两个按钮",
+      "问题反馈 · 运行日志一键导出" in _j29 and
+      "btnDiagExport" in _j29 and "btnDiagView" in _j29 and
+      "function exportDiag" in _j29 and "api/diag/export" in _j29)
+try:
+    import diag as _dgm29
+    _b29 = _dgm29.build_bundle(app)
+    check("⑦ 日志导出：运行时生成非空纯文本诊断包",
+          isinstance(_b29, str) and len(_b29) > 500 and
+          ("诊断" in _b29 or "ipsense" in _b29),
+          "%d 字符" % len(_b29))
+    _s29 = _dgm29.scrub(
+        "map_key=SUPERSECRET123456 client 220.205.91.142 "
+        "mail a@b.com Bearer xyz123456789")
+    check("⑦ 日志导出：scrub 覆盖 KEY / IPv4 / 邮箱 / Bearer",
+          "SUPERSECRET123456" not in _s29 and "220.205.*.*" in _s29 and
+          "***@***" in _s29 and "***REDACTED***" in _s29, _s29)
+    _r29x = gateway.api(app, "GET", "/api/diag/export", "", b"")
+    check("⑦ 日志导出：GET /api/diag/export 返回 200 与 text/plain",
+          len(_r29x) == 3 and _r29x[0] == 200 and
+          "text/plain" in _r29x[2] and isinstance(_r29x[1], bytes))
+except Exception as _e29:
+    check("⑦ 日志导出：运行时验证", False, repr(_e29))
+
+# ⑧ 仓库排障三件套
+_sh29 = open(os.path.join(ROOT, "tools", "diag_bundle.sh"),
+             encoding="utf-8").read()
+_is29 = open(os.path.join(ROOT, ".github", "ISSUE_TEMPLATE", "bug_report.yml"),
+             encoding="utf-8").read()
+_tg29 = open(os.path.join(ROOT, "docs", "排障指南.md"),
+             encoding="utf-8").read()
+check("⑧ 三件套：诊断脚本 / Issue 模板 / 排障指南均在仓库",
+      all(os.path.isfile(os.path.join(ROOT, p)) for p in (
+          "tools/diag_bundle.sh", ".github/ISSUE_TEMPLATE/bug_report.yml",
+          "docs/排障指南.md")))
+check("⑧ 诊断脚本：复用 diag.scrub 脱敏并自动打 tar.gz",
+      "diag.scrub" in _sh29 and "scrub_file" in _sh29 and
+      "tar -czf" in _sh29 and "sys.exit(0)" in _sh29)
+check("⑧ Issue 模板：结构化表单 + 隐私确认必填",
+      "name: 问题反馈（BUG）" in _is29 and
+      "required: true" in _is29 and "③ 隐私确认" in _is29)
+check("⑧ 排障指南：三层日志路径与诊断 6 件套",
+      "/var/log/apps/ipsense.log" in _tg29 and "app.log" in _tg29 and
+      "cmd.log" in _tg29 and "诊断 6 件套" in _tg29)
+check("⑧ 根 README / 详版 / 使用说明均加排障入口",
+      "docs/排障指南.md" in _rm29 and "排障" in _rd29 and
+      "排障" in _dc29)
+
+# 预览页与口径回归
+check("预览页 mock 同步 1.1.15 新接口与字段",
+      "api/diag/export" in _p29 and "api/geo/district" in _p29 and
+      "geo_district_enabled" in _p29 and
+      "district:(j%2===0" in _p29 and "scope:'cn'" in _p29 and
+      "function R(d)" in _p29 and "text:function()" in _p29)
+check("只观测口径无回归：不封禁 / 不改防火墙 / 不自动处置",
+      "不封禁 IP" in _sm29 and "不自动修改防火墙" in _sm29 and
+      "只观测" in _j29)
+check("历史能力无回归（1.1.14 / 1.1.13 / 1.1.11 / 1.1.8）",
+      "KnockDirTailer" in _cl29 and "args: [args || {}]" in _j29 and
+      "isolation:isolate" in _c29 and "map_provider" in _j29 and
+      "def build_summary" in _sm29 and "openPickerCard" in _j29)
 
 print("\n=== 结果：%d 项通过 / %d 项失败 ===" % (ok, len(fail)))
 if fail:

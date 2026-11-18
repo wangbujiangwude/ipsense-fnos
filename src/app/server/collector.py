@@ -340,6 +340,7 @@ class Collector(object):
         self.geo = geo
         self.cfg = cfg
         self.log = log or (lambda m: None)
+        self.verifier = None          # 1.1.15：由 App 在启动采集器时注入
         self.queue = queue.Queue(maxsize=20000)
         self.recent = collections.deque(maxlen=600)
         self.lock = threading.Lock()
@@ -596,6 +597,10 @@ class Collector(object):
         ev["referer"] = knock_pick(d, KNOCK_REF_KEYS)[:300]
         return self._tag(ev, "knock", proto)
 
+    def set_verifier(self, verifier):
+        """注入在线校验器，让新出现的公网 IP 首次入库即进入后台核验队列。"""
+        self.verifier = verifier
+
     # ---------- 事件入口 ----------
     def emit(self, ev):
         ip = ev.get("ip", "")
@@ -635,7 +640,8 @@ class Collector(object):
             g = self.geo.lookup(ip)
             d = dict(ev)
             d.update({"ipver": g["ipver"], "country": g["country"],
-                      "province": g["province"], "city": g["city"], "isp": g["isp"],
+                      "province": g["province"], "city": g["city"],
+                      "district": g.get("district", ""), "isp": g["isp"],
                       "scope": g["scope"], "lat": g["lat"], "lng": g["lng"]})
             # 内网设备单独归类，不再以「无归属公网来源」污染地图 / 排名
             if separate and is_private(ip):
@@ -647,6 +653,16 @@ class Collector(object):
         except Exception as e:
             self.log("writer error: %s" % e)
             return
+        # 1.1.15：入库成功后再入队，避免校验回写与插入抢顺序。
+        # 去重 / 缓存命中 / 队列上限都由 verifier.enqueue() 负责；
+        # 内网地址不查在线源，离线库判错的新 IP 会在数秒内自动订正。
+        if self.verifier and self.cfg.get("geo_verify_auto", True):
+            for d in full:
+                if d.get("scope") in ("cn", "overseas"):
+                    try:
+                        self.verifier.enqueue(d.get("ip", ""))
+                    except Exception:
+                        pass
         with self.lock:
             for i, d in enumerate(full):
                 self.source_hits[d["source"]] += 1

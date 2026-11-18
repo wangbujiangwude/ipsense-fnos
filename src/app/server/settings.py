@@ -63,6 +63,10 @@ DEFAULTS = {
     "geo_verify_enabled": True,
     "geo_verify_days": 30,
     "geo_verify_batch": 60,
+    # 1.1.15：新公网 IP 首次出现即进入后台核验（避免离线库脏值长期滞留）
+    "geo_verify_auto": True,
+    # 区级补充探测：只用独立源补 district，不参与 4 票裁决
+    "geo_district_enabled": True,
     # 1.1.9：软件汇总日志（交给 AI 做设备防护分析）
     # 保存目录由设置界面的 fnOS 原生文件夹选择器选定；这里只存路径，
     # 不内置任何默认目录，也不预设用户数据位置。
@@ -75,8 +79,8 @@ DEFAULTS = {
 BOOL_KEYS = ("source_local_auth", "source_local_web", "source_router_syslog",
              "source_knock", "source_knock_app", "source_fnos_audit",
              "source_auth_rotated",
-             "lan_separate", "geo_verify_enabled", "map_arc_animate",
-             "summary_enabled")
+             "lan_separate", "geo_verify_enabled", "geo_verify_auto",
+             "geo_district_enabled", "map_arc_animate", "summary_enabled")
 INT_KEYS = ("syslog_port", "web_port", "ssh_port", "keep_days", "map_refresh",
             "map_heavy_refresh", "map_arc_limit", "auth_rotated_max",
             "geo_verify_days", "geo_verify_batch", "summary_interval",

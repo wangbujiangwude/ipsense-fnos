@@ -18,7 +18,7 @@ import urllib.parse
 import traceback
 
 APP_NAME = "ipsense"
-VERSION = "1.1.14"
+VERSION = "1.1.15"
 PREFIX = "/app/" + APP_NAME
 APP_DEST = os.environ.get("TRIM_APPDEST", "/var/apps/%s/target" % APP_NAME)
 VAR_DIR = os.environ.get("TRIM_PKGVAR") or "/vol1/@appdata/%s" % APP_NAME
@@ -42,6 +42,7 @@ from geosource import GeoVerifier                            # noqa: E402
 from store import Store                                      # noqa: E402
 from collector import Collector                              # noqa: E402
 from locate import current as locate_current, run as locate_run   # noqa: E402
+from diag import build_bundle                                       # noqa: E402
 from summary import (                                             # noqa: E402
     SummaryWriter, build_summary, write_summary, validate_dir,
     path_allowed, LATEST_NAME,
@@ -157,6 +158,7 @@ class App(object):
             if self.collector:
                 self.collector.stop()
             self.collector = Collector(self.store, self.geo, self.settings.all(), log)
+            self.collector.set_verifier(self.verifier)
             # 1.1.0：升级后给历史 Web 事件补协议 / 来路 / 会话字段。
             # dedup 键含 raw，旧行不会被重复 INSERT，只做按 dedup 的精确 UPDATE。
             # 真机旧库实测 243349 行，解析 + UPDATE 需数十秒；必须放后台线程，
@@ -465,6 +467,24 @@ def api(app, method, path, query, body):
         except Exception as e:
             app.summary.mark(None, str(e))
             return 400, {"ok": False, "msg": str(e)}
+    # 1.1.15：设置界面「运行日志一键导出」，全脱敏单文件，供 Issue 直接附上
+    if path == "/api/diag/export":
+        return 200, build_bundle(app).encode("utf-8"), "text/plain; charset=utf-8"
+    if path == "/api/geo/district" and method == "POST":
+        try:
+            payload = json.loads(body.decode("utf-8") if isinstance(body, bytes)
+                                 else (body or "{}"))
+        except (ValueError, TypeError):
+            payload = {}
+        ip = str(payload.get("ip") or "").strip()
+        d = str(payload.get("district") or "").strip()[:40]
+        if not ip:
+            return 400, {"ok": False, "msg": "缺少 ip"}
+        n = (app.verifier.set_district(ip, d) if app.verifier
+             else app.store.set_district(ip, d))
+        app.geo.invalidate(ip)
+        return 200, {"ok": True, "ip": ip, "district": d,
+                     "events_updated": n}
     if path == "/api/summary/download":
         rng = p.get("rng") or app.settings.get("summary_range", "24h")
         return 200, build_summary(app, rng).encode("utf-8"), "text/markdown; charset=utf-8"
@@ -474,7 +494,8 @@ def api(app, method, path, query, body):
         for r in rec["rows"]:
             ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(r["ts"]))
             vals = [ts, r["source"], r["ip"],
-                    "%s/%s/%s" % (r["country"], r["province"], r["city"]),
+                    "%s/%s/%s/%s" % (r["country"], r["province"], r["city"],
+                                     r.get("district", "")),
                     r["scope"], r.get("proto") or "unknown", r["verdict"],
                     str(r["port"]), r["service"], str(r.get("status") or ""),
                     r.get("referer") or "", r["action"], r["path"]]

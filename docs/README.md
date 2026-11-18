@@ -82,7 +82,19 @@ FPK
 
 ### 功能演进
 
-**1.1.14（当前版本）**
+**1.1.15（当前版本）**
+
+- 🐛 **境外全球视图长弧线中断**：根因有两层。等距投影侧旧窗口固定 `[-180,180]`，跨国际日期变更线的长弧被 `wrapSegs()` 切成两半分别落在画布最左 / 最右，中间隔着整幅地图；SDK 侧 `MultiPolyline` 只渲染一个 360° 窗口，切两半后通常只有一半落在视野内。修复为「以本机经度为中心的 360° 连续窗口」（`worldCenteredBounds()` / `unwrapTo()`），被切开的两段在窗口内自然首尾相接；SDK 侧另由 `worldSegs()` 生成 `-360 / 0 / +360` 三份世界副本折线，任意视野里都有一条完整弧。跨 seam 长弧采样从 64 段加密到 96 段。数值回归（`tools/check_115_geometry.mjs`）实测展开后 0 个 360° 跳变、两段在 180° 处经度差 0、末点正确落到本机。
+- 🐛 **同省内 IP 不显示**：两个独立缺陷叠加。前端 `buildArcs()` 近距阈值 `0.35°` 把同省不同市（广州 113.26 / 深圳 114.06，距离度量 1.2651）整组判成「与本机重合」，只留 2.6px 小点不画弧；后端 `_geo_distribution_uncached(scope="all")` 把所有境内归并成一个「中国」气泡。修复为阈值降到 `0.02°`（约 2km）、后端境内按省细分并返回 `r.scope`、前端气泡下钻按 `r.scope` 选匹配字段。另查出省份名不统一（离线库「安徽省」/ 在线源「安徽」）会拆成两个气泡，新增按 `GeoResolver._province_key()` 归一合并；坐标查找也补了短名宽松匹配，避免 `lat/lng=None` 导致气泡根本不画。
+- 🆕 **实时事件监控范围筛选**：记录表已有 `fScope`，实时事件卡片新增 `liveScope` 下拉（全部范围 / 境内 / 境外 / 内网 / 局域网设备）。前端按 `e.scope` 过滤，后端事件流仍全量推送，切换无需重新请求；标签同步显示当前范围与条数。
+- 🐛 **新 IP 首次归属判定错误**：实测 `220.205.91.142` 离线库返回「中国|广东省|广州市|联通|CN」，而 `ip-api.com` / `ip.sb` / `ipinfo.io` 三家均为安徽 / 合肥。旧逻辑只在启动后 `queue_top()` 高频 IP，新 IP 不立即核验，必须手动点「批量校验高频 IP」才恢复。修复为 `Collector.set_verifier()` 注入校验器，入库成功后对 `scope` 为 `cn` / `overseas` 的新 IP 调 `verifier.enqueue()`；队列改为有界 `queue.Queue(maxsize=512)` 并用 `_pending` 集合去重，避免日志洪峰打爆后台线程。设置页新增「新 IP 首次出现即自动核验」开关。
+- 🆕 **区级信息**：`events` / `geo_cache` 幂等新增 `district` / `district_source` 列；离线库第 6 段可选区县、`ip-api.com` 的 `district` 字段、独立源 `ip9.com.cn` 补区县（明确**不参与**省 / 市 4 票裁决，避免把国内库省级偏差带进多数派）。CSV 导出、10 段汇总日志、记录表、实时事件、单 IP 画像、整组画像、五卡下钻 IP 明细统一带区级。免费源覆盖不稳定时，画像里可手工填写并回写历史事件（`/api/geo/district`）。
+- 🐛 **高德 KEY 报错指向不存在的域名**：全仓确认正确域名是 `webapi.amap.com`，用户看到的 `webapiamap.com` 不在当前源码里。实测无效 KEY 时高德返回 `Content-Type: text/plain` 的 `console.log("<AMap JSAPI> Error key!")`，浏览器触发 `script.onerror` 或「AMap 未创建」。修复为 `mapSdkUrl()` 自动纠正历史错误域名、`sdkFailHint()` 按引擎区分「KEY 无效 / 未绑定 Web 端 / 域名白名单 / 未配 jscode / 网络拦截」并给出正确域名，底图诊断标注「已自动纠正旧域名」。
+- 🆕 **运行日志一键导出**：新增 `src/app/server/diag.py` 与 `/api/diag/export`，合并主运行日志、兜底副本、生命周期日志、应用状态、数据源状态、配置白名单脱敏版与数据库聚合计数，输出可直接贴 Issue 的纯文本。配置先按键名剔除 `map_key` / `map_keys` / `map_custom` / 出口 IP，文本再整体过 `scrub()`：令牌 / 口令 / Bearer / 私钥 / 邮箱抹除，IPv4 只保留前两段，IPv6 整体替换；**不读取 `events.db` 原始事件行**。设置界面最底部提供导出与预览两个按钮。
+- 🆕 **仓库排障三件套**：`tools/diag_bundle.sh`（只读收集 + 自动脱敏 + 自动打 tar.gz，优先复用 `diag.scrub()`，旧版本回退内嵌同规则实现）、`.github/ISSUE_TEMPLATE/bug_report.yml`（结构化表单，把「诊断 6 件套」设为必填）、`docs/排障指南.md`（日志位置、命令清单、按症状排查、隐私边界 SOP）。根 README / 详版 README / 使用说明均加入口链接。
+- 🧩 本地验证：新增 `tools/check_115_geometry.mjs`（真实前端函数抽取 + 17 项几何断言）与 `tools/smoke_115_store.py`（临时 SQLite 真实建表 + 19 项后端断言），覆盖省份归一合并、区级字段透传与脱敏不泄漏。
+
+**1.1.14**
 
 - 🆕 新增「敲门网关请求日志」数据源，面向飞牛应用中心的第三方 `fn-knock-lite`（敲门 knock Lite）。该应用本质是反向代理 + 身份认证 + WAF + 内网穿透，公网请求先到它的网关，未通过认证的请求根本进不了 fnOS 的 `auth.log` / `nginx access.log`，是此前 `ipsense` 最大的感知盲区。
 - 🆕 接入依据是真机取证而非猜：官方文档「请求分析」说明网关**按天把结构化 JSON 写到运行目录 `logs/`**，字段取自 Go 网关二进制的 `json` tag（`client_ip` / `remote_ip` / `logged_time` / `auth_decision` / `waf_action` / `status_code` / `host` / `path` / `scheme` 等）。因此新增 `KnockDirTailer` 做**目录级增量扫描**（inode + offset、最多 12 个分片、首次只回补尾部 64KB），而不是复用单文件 `LogTailer`。
@@ -461,7 +473,7 @@ $PY tools/make_icon.py                 # 生成图标
 $PY tools/selftest.py                  # 离线自检
 node --check src/app/ui/app.js         # 前端语法
 PY=$PY bash tools/build_fpk.sh         # 打包（LF / 可执行位 / py_compile / checksum）
-$PY tools/deploy.py --fpk build/ipsense_1.1.14_all.fpk
+$PY tools/deploy.py --fpk build/ipsense_1.1.15_all.fpk
 ```
 
 `build_fpk.sh` 用 `tarfile` 显式写权限位（`cmd/*` = 0755），避免从 Windows 打包时丢可执行位；
@@ -475,9 +487,9 @@ ipsense 是纯 Python 标准库 + JS/CSS + `ip2region` 数据文件，没有任�
 
 | 安装包 | `platform` | 适用 |
 |---|---|---|
-| `ipsense_1.1.14_all.fpk` | `all` | 通用，x86 与 ARM 都能装，**推荐** |
-| `ipsense_1.1.14_x86.fpk` | `x86` | x86_64 设备，或按架构分发的应用源 |
-| `ipsense_1.1.14_arm.fpk` | `arm` | aarch64 设备，或按架构分发的应用源 |
+| `ipsense_1.1.15_all.fpk` | `all` | 通用，x86 与 ARM 都能装，**推荐** |
+| `ipsense_1.1.15_x86.fpk` | `x86` | x86_64 设备，或按架构分发的应用源 |
+| `ipsense_1.1.15_arm.fpk` | `arm` | aarch64 设备，或按架构分发的应用源 |
 
 `build_fpk.sh` 打完通用包后会自动调用 `tools/build_multiarch.py` 派生另两个包（`SKIP_MULTIARCH=1` 可跳过）。派生脚本不修改 `src/manifest`、不改动 `all` 包，且逐成员校验「除 `platform` 行外字节与权限完全一致」。
 
@@ -499,3 +511,17 @@ $PY build/check_114_multiarch.py                                       # 包结�
 - `proto=web` 表示 combined 日志无可靠 scheme 信号下的「Web 未识别」，不是「不是 HTTPS」；需要精确协议时在设置页填 `web_scheme_override`，或修改前置反代并自行提供可信的 `X-Forwarded-Proto`（当前版本不读取该头）。
 - 入口页按 `ip + UA + 30 分钟桶` 划分会话，是粗略会话而非登录态会话；同一 IP 换 UA 或跨 30 分钟会被算作新会话。
 - 应用以 root 运行，请勿把 `/vol1/@appdata/ipsense/config.json` 里的地图 key 提交到公开仓库。
+
+## 7. 排障与问题反馈
+
+`1.1.15` 起仓库补齐了三件套：
+
+| 文件 | 作用 |
+|---|---|
+| `tools/diag_bundle.sh` | 只读收集三层日志、健康状态、配置脱敏版与数据库聚合计数，自动打 `tar.gz` |
+| `.github/ISSUE_TEMPLATE/bug_report.yml` | 结构化 Issue 表单，把「诊断 6 件套」设为必填 |
+| `docs/排障指南.md` | 日志位置、命令清单、按症状排查、隐私边界的完整 SOP |
+
+应用内也有等价入口：「设置 → 最底部 → 运行日志一键导出」，返回一份已脱敏的 `.txt`（后端 `/api/diag/export`）。两条通道共用同一套脱敏规则，且都**不读取 `events.db` 原始事件行**。
+
+详细流程与诊断 6 件套见 [排障指南](排障指南.md)。

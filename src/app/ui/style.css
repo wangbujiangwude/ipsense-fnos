@@ -132,6 +132,9 @@ button{cursor:pointer}
 .ip-item .ip{flex:1;min-width:0;font-family:ui-monospace,Menlo,monospace;font-size:12px;
   color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ip-item .t{font-size:10.5px;color:var(--dim);white-space:nowrap;line-height:1.4;text-align:right}
+/* 1.1.15：整组画像的 IP 明细也展示到区级，用省略号避免撑爆行高 */
+.ip-item .ip-loc{display:block;margin-top:2px;font-family:inherit;font-size:10px;
+  color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .profile-btn{width:100%;margin:0 0 8px;padding:8px 10px;border-radius:8px;cursor:pointer;font-size:11.5px;
   border:1px solid var(--line);background:var(--panel-2);color:var(--text);text-align:left}
 .profile-btn:hover{background:var(--panel-3);border-color:var(--blue)}
@@ -193,9 +196,9 @@ button{cursor:pointer}
 
 /* ---------- 表格 ---------- */
 .filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-.filters select,.filters input{background:var(--panel-2);border:1px solid var(--line);border-radius:9px;
+.filters select,.filters input,.card-head select{background:var(--panel-2);border:1px solid var(--line);border-radius:9px;
   padding:7px 10px;font-size:12px;outline:none;transition:border-color .18s var(--ease)}
-.filters select:focus,.filters input:focus{border-color:var(--blue)}
+.filters select:focus,.filters input:focus,.card-head select:focus{border-color:var(--blue)}
 .filters input{min-width:190px}
 .table-wrap{overflow-x:auto}
 table{width:100%;border-collapse:collapse;font-size:12px}

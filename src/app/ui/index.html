@@ -160,7 +160,12 @@
     <div class="row-2">
       <section class="card">
         <div class="card-head"><div><h2>实时访问事件</h2><p>最新来源与判定，自动滚动</p></div>
-          <span class="tag tag-blue" id="liveTag">实时</span></div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <select id="liveScope" aria-label="监控范围">
+              <option value="">全部范围</option><option value="cn">境内</option>
+              <option value="overseas">境外</option><option value="private">内网</option>
+              <option value="lan">局域网设备</option></select>
+            <span class="tag tag-blue" id="liveTag">实时</span></div></div>
         <div class="live-list" id="liveList"><div class="empty">等待数据…</div></div>
       </section>
       <section class="card">
@@ -198,7 +203,7 @@
 
   <footer>
     <span id="footMap">IP 动态感知 · 离线归属库 ip2region · 底图服务：—</span>
-    <span id="footInfo">数据源：本机日志 / fnOS 结构化审计 / SSH 轮转日志 / 路由器日志 / 端口敲门 · 归属：本地离线库 + 3 家在线源交叉校验 · 协议 / 来路 / 受访页 / 入口页来自 Nginx combined 日志 · 1.1.14 可在设置里接入敲门网关请求日志（只读 fn-knock-lite 按天分片的 JSON），把软件汇总日志保存到飞牛文件夹交给 AI 做防护分析；点开保存位置会在应用窗口内弹出飞牛原生卡片</span>
+    <span id="footInfo">数据源：本机日志 / fnOS 结构化审计 / SSH 轮转日志 / 路由器日志 / 端口敲门 · 归属：本地离线库 + 3 家在线源交叉校验 · 协议 / 来路 / 受访页 / 入口页来自 Nginx combined 日志 · 1.1.15 长弧线连续显示、同省来源按省细分、实时事件可按范围筛选、归属地显示到区级；点「设置」最底部可一键导出已脱敏的运行日志，方便反馈问题</span>
   </footer>
 </div>
 

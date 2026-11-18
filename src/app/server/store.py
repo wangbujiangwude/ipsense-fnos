@@ -22,6 +22,13 @@ EXTRA_COLUMNS = (
     ("referer", "TEXT DEFAULT ''"),
     ("ua", "TEXT DEFAULT ''"),
     ("sess_id", "TEXT DEFAULT ''"),
+    # 1.1.15：区级归属（安徽省合肥市蜀山区）；离线库无区县时留空，不猜值。
+    ("district", "TEXT DEFAULT ''"),
+)
+
+GEO_CACHE_COLUMNS = (
+    ("district", "TEXT DEFAULT ''"),
+    ("district_source", "TEXT DEFAULT ''"),
 )
 
 
@@ -117,7 +124,7 @@ class Store(object):
             source   TEXT NOT NULL,
             ip       TEXT NOT NULL,
             ipver    INTEGER DEFAULT 4,
-            country  TEXT, province TEXT, city TEXT, isp TEXT,
+            country  TEXT, province TEXT, city TEXT, district TEXT, isp TEXT,
             scope    TEXT,
             lat      REAL, lng REAL,
             port     INTEGER,
@@ -139,6 +146,7 @@ class Store(object):
         CREATE TABLE IF NOT EXISTS geo_cache (
             ip              TEXT PRIMARY KEY,
             country         TEXT, province TEXT, city TEXT, isp TEXT,
+            district        TEXT, district_source TEXT,
             label           TEXT, scope TEXT, lat REAL, lng REAL,
             ipver           INTEGER DEFAULT 4,
             local_country   TEXT, local_province TEXT, local_city TEXT,
@@ -159,6 +167,13 @@ class Store(object):
             if name not in have:
                 self.conn.execute("ALTER TABLE events ADD COLUMN %s %s" % (name, decl))
                 added.append(name)
+        have_geo = {r["name"] for r in self.conn.execute(
+            "PRAGMA table_info(geo_cache)").fetchall()}
+        for name, decl in GEO_CACHE_COLUMNS:
+            if name not in have_geo:
+                self.conn.execute(
+                    "ALTER TABLE geo_cache ADD COLUMN %s %s" % (name, decl))
+                added.append("geo_cache." + name)
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_events_proto ON events(proto, ts)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_events_sess ON events(sess_id, id)")
         self.conn.commit()
@@ -170,10 +185,10 @@ class Store(object):
         return hashlib.md5(key.encode("utf-8", "replace")).hexdigest()[:20]
 
     INSERT_SQL = ("INSERT OR IGNORE INTO events "
-                  "(ts,day,source,ip,ipver,country,province,city,isp,scope,lat,lng,"
+                  "(ts,day,source,ip,ipver,country,province,city,district,isp,scope,lat,lng,"
                   "port,service,action,verdict,path,raw,dedup,"
                   "layer,proto,scheme_conf,method,status,referer,ua,sess_id) "
-                  "VALUES (" + ",".join(["?"] * 27) + ")")
+                  "VALUES (" + ",".join(["?"] * 28) + ")")
 
     def _row(self, ev):
         ts = float(ev.get("ts") or time.time())
@@ -182,7 +197,8 @@ class Store(object):
         return (
             ts, day_of(ts), ev.get("source", "unknown"), ev.get("ip", ""),
             ev.get("ipver", 4), ev.get("country", ""), ev.get("province", ""),
-            ev.get("city", ""), ev.get("isp", ""), ev.get("scope", "unknown"),
+            ev.get("city", ""), ev.get("district", ""), ev.get("isp", ""),
+            ev.get("scope", "unknown"),
             ev.get("lat"), ev.get("lng"), ev.get("port") or 0,
             ev.get("service", ""), ev.get("action", ""), ev.get("verdict", "normal"),
             (ev.get("path") or "")[:300], raw, dk,
@@ -330,7 +346,7 @@ class Store(object):
                 out["overseas"].append({"name": r["k"], "count": r["n"], "ips": r["ips"]})
         return out
 
-    RECORD_COLS = ("id,ts,source,ip,country,province,city,isp,scope,lat,lng,port,"
+    RECORD_COLS = ("id,ts,source,ip,country,province,city,district,isp,scope,lat,lng,port,"
                    "service,action,verdict,path,layer,proto,scheme_conf,method,status,"
                    "referer,ua,sess_id")
 
@@ -376,6 +392,7 @@ class Store(object):
         with self.lock:
             rows = self.conn.execute(
                 "SELECT ip, MAX(country) country, MAX(province) province, MAX(city) city, "
+                "MAX(district) district, "
                 "MAX(scope) scope, MAX(lat) lat, MAX(lng) lng, COUNT(*) n, "
                 "MAX(verdict) verdict, MAX(ts) last_ts, MAX(id) last_id "
                 "FROM events WHERE ts>=? AND lat IS NOT NULL "
@@ -494,6 +511,7 @@ class Store(object):
                 "ip": ip, "n": 0, "first_ts": r["ts"], "last_ts": r["ts"],
                 "verdict": r["verdict"] or "", "country": r["country"] or "",
                 "province": r["province"] or "", "city": r["city"] or "",
+                "district": r["district"] or "",
                 "isp": r["isp"] or "", "port": r["port"] or 0})
             a["n"] += 1
             if r["ts"] and r["ts"] < a["first_ts"]:
@@ -529,12 +547,14 @@ class Store(object):
         with self.lock:
             self.conn.execute(
                 "INSERT OR REPLACE INTO geo_cache "
-                "(ip,country,province,city,isp,label,scope,lat,lng,ipver,"
+                "(ip,country,province,city,district,district_source,isp,label,scope,lat,lng,ipver,"
                 " local_country,local_province,local_city,sources,confidence,"
                 " disagree,online_sources,checked_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
                     ip, geo.get("country", ""), geo.get("province", ""),
-                    geo.get("city", ""), geo.get("isp", ""), geo.get("label", ""),
+                    geo.get("city", ""), geo.get("district", ""),
+                    vf.get("district_source", ""),
+                    geo.get("isp", ""), geo.get("label", ""),
                     geo.get("scope", "cn"), geo.get("lat"), geo.get("lng"),
                     geo.get("ipver", 4),
                     local.get("country", ""), local.get("province", ""),
@@ -559,11 +579,24 @@ class Store(object):
         """把多源裁决结果回写到该 IP 的历史公网事件，地图/排名/记录立即生效。"""
         with self.lock:
             cur = self.conn.execute(
-                "UPDATE events SET country=?, province=?, city=?, isp=?, "
+                "UPDATE events SET country=?, province=?, city=?, district=?, isp=?, "
                 "scope=?, lat=?, lng=? WHERE ip=? AND scope IN ('cn','overseas')",
                 (geo.get("country", ""), geo.get("province", ""), geo.get("city", ""),
-                 geo.get("isp", ""), geo.get("scope", "cn"), geo.get("lat"),
+                 geo.get("district", ""), geo.get("isp", ""),
+                 geo.get("scope", "cn"), geo.get("lat"),
                  geo.get("lng"), ip))
+            self.conn.commit()
+            return cur.rowcount
+
+    def set_district(self, ip, district):
+        """手工补充区级归属：事件与缓存一起更新，重载后仍生效。"""
+        d = str(district or "").strip()[:40]
+        with self.lock:
+            cur = self.conn.execute(
+                "UPDATE events SET district=? WHERE ip=?", (d, ip))
+            self.conn.execute(
+                "UPDATE geo_cache SET district=?, district_source=? WHERE ip=?",
+                (d, "manual", ip))
             self.conn.commit()
             return cur.rowcount
 
@@ -822,9 +855,15 @@ class Store(object):
         limit = max(5, min(80, int(limit or 40)))
         from geoip import PROVINCE_COORDS, COUNTRY_COORDS
         if scope == "all":
-            sql = ("SELECT CASE WHEN scope='cn' THEN '中国' "
+            # 1.1.15：境内不再统一归并成「中国」一个气泡。
+            # 同省访问此前在全球视图里完全看不见，现在按省细分；
+            # 境外仍按国家 / 地区，并用 sk 标注该行是境内还是境外。
+            sql = ("SELECT CASE WHEN scope='cn' THEN "
+                   "COALESCE(NULLIF(province,''),'中国·未细分') "
                    "ELSE COALESCE(NULLIF(country,''),'未知') END k, "
-                   "COUNT(*) n, COUNT(DISTINCT ip) ips FROM events "
+                   "COUNT(*) n, COUNT(DISTINCT ip) ips, "
+                   "CASE WHEN scope='cn' THEN 'cn' ELSE 'overseas' END sk "
+                   "FROM events "
                    "WHERE ts>=? AND scope IN ('cn','overseas') "
                    "GROUP BY k ORDER BY n DESC LIMIT ?")
             total_sql = ("SELECT COUNT(*) FROM events WHERE ts>=? "
@@ -845,12 +884,51 @@ class Store(object):
         with self.lock:
             rows = self.conn.execute(sql, (start, limit)).fetchall()
             total = self.conn.execute(total_sql, total_args).fetchone()[0]
+        if scope == "all":
+            # 1.1.15：省份名在库里可能不统一（离线库「安徽省」/ 在线源「安徽」），
+            # 直接按原始值分组会把同一个省拆成两个挨在一起的气泡，既重复计数
+            # 又让「同省访问」看起来分散。这里按内置省级行政区表归一后合并，
+            # count / ips 累加，不丢任何一条记录；境外国家 / 地区不做归一。
+            from geoip import GeoResolver
+            merged = {}
+            for r in rows:
+                k, sk = r["k"], r["sk"]
+                if sk == "cn":
+                    k = GeoResolver._province_key(k)
+                key = (k, sk)
+                if key not in merged:
+                    merged[key] = {"n": 0, "ips": 0}
+                merged[key]["n"] += r["n"]
+                merged[key]["ips"] += r["ips"]
+            rows = [{"k": k[0], "n": v["n"], "ips": v["ips"], "sk": k[1]}
+                    for k, v in merged.items()]
+            rows.sort(key=lambda x: -x["n"])
         out = []
         for r in rows:
             name = r["k"]
-            coord = (PROVINCE_COORDS.get(name) if scope == "cn"
-                     else COUNTRY_COORDS.get(name))
+            keys = r.keys()
+            row_scope = (r["sk"] if scope == "all" and "sk" in keys else scope)
+            if row_scope == "cn":
+                coord = PROVINCE_COORDS.get(name)
+                if not coord and name:
+                    # 1.1.15：在线源可能给「安徽」而不是「安徽省」，做一次宽松匹配。
+                    # 命中不到坐标时 lat/lng 会是 None，前端根本不画气泡，
+                    # 表现就是「同省 IP 在地域分布图里不显示」。
+                    short = name.replace("省", "").replace("市", "") \
+                                .replace("自治区", "").replace("壮族", "") \
+                                .replace("回族", "").replace("维吾尔", "")
+                    for pk, pv in PROVINCE_COORDS.items():
+                        ps = pk.replace("省", "").replace("市", "") \
+                               .replace("自治区", "").replace("壮族", "") \
+                               .replace("回族", "").replace("维吾尔", "")
+                        if short and (ps == short or ps.startswith(short)
+                                      or short.startswith(ps)):
+                            coord = pv
+                            break
+            else:
+                coord = COUNTRY_COORDS.get(name)
             out.append({"name": name, "count": r["n"], "ips": r["ips"],
+                        "scope": row_scope,
                         "lat": coord[0] if coord else None,
                         "lng": coord[1] if coord else None})
         return {"range": rng, "scope": scope, "total": total, "regions": out}
@@ -974,9 +1052,11 @@ class Store(object):
             ip_rows = self.conn.execute(
                 "SELECT %sip ip, COUNT(*) n, MIN(%sts) first_ts, MAX(%sts) last_ts, "
                 "MAX(%scountry) country, MAX(%sprovince) province, MAX(%scity) city, "
+                "MAX(%sdistrict) district, "
                 "MAX(%sisp) isp, MAX(%sscope) scope, MAX(%sverdict) verdict, "
                 "MAX(%sproto) proto %s GROUP BY %sip ORDER BY n DESC LIMIT ?" %
-                (pfx, pfx, pfx, pfx, pfx, pfx, pfx, pfx, pfx, pfx, from_where, pfx),
+                (pfx, pfx, pfx, pfx, pfx, pfx, pfx, pfx,
+                 pfx, pfx, pfx, from_where, pfx),
                 base_args + args + [limit]).fetchall()
             rec_rows = self.conn.execute(
                 "SELECT %sts ts, %sip ip, %sproto proto, %sverdict verdict, "
