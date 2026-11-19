@@ -10,6 +10,127 @@
     var sep = path.indexOf('?') >= 0 ? '&' : '?';
     return BASE + path.replace(/^\//, '') + sep + TICKET + '_=' + Date.now();
   }
+  // ---- 1.1.17：前端运行时报错采集 ----
+  // 旧版只把底图错误显示在页面上，JS 异常 / SDK 加载失败 / 接口失败一关页面就没了，
+  // 用户没法把「软件运行时到底报了什么错」交给别人定位。这里做三件事：
+  //   ① 全局捕获 error / unhandledrejection / 资源加载失败 / 接口失败；
+  //   ② 内存环形缓冲 + 同因合并，避免轮询失败把日志刷爆；
+  //   ③ 批量 POST /api/runtime/errors 落盘，失败静默退避，绝不产生新的异常。
+  // 只记录错误本身与环境上下文，不记录请求体、票据、Cookie 或原始事件行。
+  var RT = { buf: [], pending: [], timer: null, seen: {}, max: 200,
+             blocked: 0, fails: 0, sent: 0, dropped: 0 };
+  var RT_HOST = { tencent: 'map.qq.com', amap: 'webapi.amap.com',
+                  bmapgl: 'api.map.baidu.com', tianditu: 'api.tianditu.gov.cn' };
+  function rtSafeUrl(u) {
+    try {
+      var s = String(u || ''), i = s.indexOf('?');
+      if (i < 0) return s.slice(0, 300);
+      // 参数名保留（能看出 URL 带了 key / callback），参数值一律不落盘
+      var q = s.slice(i + 1).split('&')
+        .map(function (p) { return p.split('=')[0]; })
+        .filter(Boolean).join(',');
+      return (s.slice(0, i) + (q ? '?<参数名:' + q + '>' : '')).slice(0, 300);
+    } catch (e) { return String(u || '').slice(0, 300); }
+  }
+  function rtCtx() {
+    var c = { ver: '', provider: '', mapState: '', mapError: '', pill: '',
+              ua: navigator.userAgent, page: location.pathname };
+    try {
+      c.ver = (S && S.version) || '';
+      c.provider = (S && S.mapProvider) || '';
+      c.mapState = (S && S.tmapState) || '';
+      c.mapError = (S && S.tmapError) || '';
+      var pill = document.querySelector('#statusPill span');
+      c.pill = pill ? pill.textContent : '';
+    } catch (e) {}
+    return c;
+  }
+  function rtDupWindow(kind) { return kind === 'api' ? 60000 : 5000; }
+  function rtPush(o) {
+    try {
+      var now = Date.now();
+      o = o || {};
+      var e = {
+        ts: now / 1000,
+        kind: String(o.kind || 'js').slice(0, 40),
+        level: String(o.level || 'error').slice(0, 16),
+        msg: String(o.msg || '').slice(0, 500),
+        src: rtSafeUrl(o.src || ''), url: rtSafeUrl(o.url || ''),
+        stack: String(o.stack || '').slice(0, 1500),
+        line: Number(o.line) || 0, col: Number(o.col) || 0,
+        status: Number(o.status) || 0, dur: Number(o.dur) || 0,
+        count: 1, provider: String(o.provider || '').slice(0, 60),
+        host: String(o.host || '').slice(0, 120),
+        tag: String(o.tag || '').slice(0, 16)
+      };
+      var k = e.kind + '|' + e.msg.slice(0, 160) + '|' + e.src;
+      var prev = RT.seen[k], at = prev ? RT.buf.indexOf(prev.ref) : -1;
+      if (prev && now - prev.at < rtDupWindow(e.kind) && at >= 0) {
+        prev.ref.count++; prev.at = now; prev.idx = at;
+        return;
+      }
+      if (RT.buf.length >= RT.max) RT.buf.shift();
+      RT.buf.push(e);
+      RT.seen[k] = { at: now, idx: RT.buf.length - 1, ref: e };
+      if (RT.pending.length >= RT.max) RT.dropped++;
+      else RT.pending.push(e);
+      rtSchedule();
+    } catch (err) {}
+  }
+  function rtSchedule() {
+    if (!RT.timer) RT.timer = setTimeout(rtFlush, 800);
+  }
+  function rtRetry(items) {
+    RT.fails++;
+    RT.blocked = Date.now() + Math.min(60000, 5000 * RT.fails);
+    RT.pending = items.concat(RT.pending).slice(0, RT.max);
+    if (!RT.timer) RT.timer = setTimeout(rtFlush, 5000);
+  }
+  function rtFlush() {
+    RT.timer = null;
+    if (!RT.pending.length) return;
+    if (Date.now() < RT.blocked) {
+      if (!RT.timer) RT.timer = setTimeout(rtFlush, 5000);
+      return;
+    }
+    var items = RT.pending.splice(0, 20);   // 单批 <= 20 条，避免请求体过大
+    try {
+      var p = fetch(url('api/runtime/errors'), {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: items, ctx: rtCtx() }),
+        cache: 'no-store'
+      });
+      if (p && p.then) {
+        p.then(function (r) {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          RT.fails = 0; RT.sent += items.length;
+        }, function () { rtRetry(items); });
+      }
+    } catch (e) { rtRetry(items); }
+    if (RT.pending.length && Date.now() >= RT.blocked) rtSchedule();
+  }
+  // 捕获阶段才能拿到 <script>/<link>/<img> 的加载失败，SDK 挂掉就靠这一条
+  window.addEventListener('error', function (e) {
+    var t = e.target;
+    if (t && t !== window && (t.src || t.href)) {
+      rtPush({ kind: 'resource', msg: '资源加载失败：' + rtSafeUrl(t.src || t.href),
+               src: t.src || t.href, tag: (t.tagName || '').toLowerCase() });
+    } else {
+      rtPush({ kind: 'js', msg: e.message || '未捕获异常', src: e.filename || '',
+               line: e.lineno || 0, col: e.colno || 0,
+               stack: (e.error && e.error.stack) || '' });
+    }
+  }, true);
+  window.addEventListener('unhandledrejection', function (e) {
+    var r = e.reason || {};
+    rtPush({ kind: 'rejection', msg: String(r.message || r || '未处理的 Promise 拒绝'),
+             stack: r.stack || '' });
+  });
+  window.addEventListener('pagehide', function () { rtFlush(); });
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden') rtFlush();
+  });
+
   function api(path, method, body) {
     // 1.1.1：给所有请求加超时兜底。以前一旦后端卡住，抽屉会永远停在
     // 「加载中…」且没有任何错误提示；现在超时/失败都会落到 catch 显示原因。
@@ -41,6 +162,9 @@
     return p.then(function (r) { return { ok: true, data: r }; },
                   function (e) {
                     console.warn('api ' + label + ' failed: ' + (e && e.message || e));
+                    // 1.1.17：接口失败也要留痕；同一接口 60 秒内只记一条并累计次数
+                    rtPush({ kind: 'api', msg: '接口失败 ' + label + '：' +
+                             (e && e.message || e), url: label });
                     return { ok: false, err: e, label: label };
                   });
   }
@@ -197,6 +321,13 @@
   function setMapState(state, msg) {
     S.tmapState = state;
     S.tmapError = msg || '';
+    // 1.1.17：底图失败是用户最常反馈的问题，把服务商 / 域名 / 原始提示一起落盘。
+    // 资源本身的加载失败由全局 capture error 另记一条 resource，两者互补。
+    if (state === 'error' && S.tmapError) {
+      rtPush({ kind: 'map_sdk', msg: '底图未显示：' + S.tmapError,
+               provider: S.mapProvider || '', host: RT_HOST[S.mapProvider] || '',
+               src: RT_HOST[S.mapProvider] || '' });
+    }
     // 供自动化验收读取，不影响界面
     try {
       document.body.dataset.mapState = state;
@@ -3355,10 +3486,19 @@
       '<div class="form-group"><h3>问题反馈 · 运行日志一键导出</h3>' +
       '<p class="hint">把主运行日志、兜底副本、生命周期日志、应用状态与数据源状态合成一份纯文本。' +
       '地图 KEY / 令牌 / 口令会被抹除，来访 IP 只保留前两段（例 220.205.*.*），' +
-      '不含原始日志行与数据库明细。导出后直接贴到 Issue 即可，不必再手动翻服务器。</p>' +
+      '精确坐标与本机位置描述也已剔除；应用中心心跳会折叠，不再淹没故障记录。' +
+      '导出后直接贴到 Issue 即可，不必再手动翻服务器。</p>' +
       '<div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap">' +
       '<button class="btn" id="btnDiagExport">导出运行日志（已脱敏）</button>' +
       '<button class="btn ghost" id="btnDiagView">先在界面预览</button></div>' +
+      // 1.1.17：真正「软件运行时报出来的错」单独一份，含地图 SDK 专项与堆栈
+      '<h3 style="margin-top:18px">运行报错一键导出（1.1.17）</h3>' +
+      '<p class="hint">页面 JS 异常、地图 SDK 没正常加载、资源加载失败、接口 4xx/5xx 与超时，' +
+      '现在会自动记录并脱敏落盘，关掉页面也不会丢。这份文件只收录真正报出来的错，' +
+      '含「地图 SDK 专项」与逐条堆栈，最适合交给 AI 定位底图 / 白屏 / 接口问题。</p>' +
+      '<div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap">' +
+      '<button class="btn" id="btnRtExport">导出运行报错（已脱敏）</button>' +
+      '<button class="btn ghost" id="btnRtView">查看最近报错</button></div>' +
       '<div id="diagPreview" class="diag-box" style="display:none;margin-top:10px"></div>' +
       '<p class="hint" style="margin:8px 0 0">命令行用户也可以用仓库里的 ' +
       '<code>tools/diag_bundle.sh</code> 收集同样的信息并自动打 tar.gz。</p>' +
@@ -3446,6 +3586,35 @@
       }).catch(function (e) { toast('回填失败：' + e.message); });
     };
     $('btnDiagExport').onclick = exportDiag;
+    $('btnRtExport').onclick = exportRuntimeErrors;
+    $('btnRtView').onclick = function () {
+      var box = $('diagPreview');
+      box.style.display = 'block';
+      box.textContent = '正在读取最近运行时报错…';
+      api('api/runtime/errors?limit=100').then(function (r) {
+        var rows = (r && r.data) || [];
+        if (!rows.length) {
+          box.textContent = '当前没有采集到运行时报错。\n' +
+            '页面 JS 异常、地图 SDK 加载失败、资源加载失败、接口失败会自动记录；' +
+            '若刚升级，请复现一次问题后再查看。';
+        } else {
+          box.textContent = rows.map(function (e, i) {
+            var d = new Date(Number(e.ts || 0) * 1000);
+            return (i + 1) + '. [' + d.toLocaleString() + '] ' +
+              (e.level || '') + ' · ' + (e.kind || '') +
+              (Number(e.count) > 1 ? ' ×' + e.count : '') + '\n   ' +
+              (e.msg || '') +
+              (e.src ? '\n   来源: ' + e.src : '') +
+              (e.stack ? '\n   堆栈: ' + String(e.stack).slice(0, 300) : '');
+          }).join('\n');
+        }
+        box.style.whiteSpace = 'pre-wrap';
+        box.style.maxHeight = '320px';
+        box.style.overflowY = 'auto';
+        box.style.fontFamily = 'ui-monospace,Menlo,Consolas,monospace';
+        box.style.fontSize = '11px';
+      }).catch(function (e) { box.textContent = '读取失败：' + e.message; });
+    };
     $('btnDiagView').onclick = function () {
       var box = $('diagPreview');
       box.style.display = 'block';
@@ -3532,6 +3701,28 @@
       setTimeout(function () { URL.revokeObjectURL(a.href); }, 3000);
       toast('运行日志已导出（已脱敏）');
     }).catch(function (e) { toast('导出失败：' + e.message); });
+  }
+  // 1.1.17：运行报错独立导出。后端返回 text/plain，不能走 api() 的 r.json()。
+  function fetchRuntimeText() {
+    return fetch(url('api/runtime/errors/export')).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.text();
+    });
+  }
+  function exportRuntimeErrors() {
+    fetchRuntimeText().then(function (txt) {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([txt], { type: 'text/plain;charset=utf-8' }));
+      a.download = 'ipsense-runtime-errors-' +
+        new Date().toISOString().replace(/[:.]/g, '-') + '.txt';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 3000);
+      toast('运行报错已导出（已脱敏）');
+    }).catch(function (e) {
+      rtPush({ kind: 'api', msg: '导出运行报错失败：' + e.message,
+               url: 'api/runtime/errors/export' });
+      toast('导出失败：' + e.message);
+    });
   }
 
   // ---- IP 详情：表格行点击与地图圆点点击共用同一套「IP 来源画像」版式 ----
@@ -3811,6 +4002,9 @@
     S.home = { lat: r.data.home_lat, lng: r.data.home_lng, label: r.data.home_label };
     applyCfg();
   }).catch(function () {}).then(function () {
+    // 1.1.17：把版本带进运行时报错上下文，导出时能直接对照发版
+    api('api/health').then(function (r) { S.version = r.version || ''; })
+      .catch(function () {});
     bind();
     setMapState('off');
     initTMap('');

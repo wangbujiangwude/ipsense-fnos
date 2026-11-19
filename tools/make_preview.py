@@ -214,9 +214,34 @@ window.addEventListener('error',function(e){
   var diagText='IP 动态感知（ipsense）· 运行日志诊断包（离线预览）\n' +
     '生成时间：2026-11-19 00:00:00\n' +
     '说明：本文件已自动脱敏。地图 KEY / 令牌 / 口令已抹除；来访 IP 只保留前两段。\n\n' +
-    '1. 环境与应用状态\n  版本：1.1.16 · 运行中 · 数据源 3 路\n\n' +
+    '1. 环境与应用状态\n  版本：1.1.17 · 运行中 · 数据源 3 路\n\n' +
     '2. 主运行日志（尾部）\n  2026-11-19 00:00:01 INFO collector 已启动\n\n' +
-    '3. 数据源状态\n  本机 SSH 已读取 · 本机 Web 已读取 · 路由器 syslog 文件不存在\n';
+    '3. 数据源状态\n  本机 SSH 已读取 · 本机 Web 已读取 · 路由器 syslog 文件不存在\n\n' +
+    '6.1 前端运行时报错（1.1.17，最近 100 条）\n' +
+    '  001 底图未显示：高德 SDK 未就绪 · map_sdk · KEY 无效\n';
+  // 1.1.17：运行时报错离线样本。预览页不连后端，POST 上报与查询都在这里闭环，
+  // 验收脚本可真实触发一个 JS 异常，再看它是否被采集并进入导出文本。
+  var rtErrors=[
+    {ts:now-120,kind:'map_sdk',level:'error',
+     msg:'底图未显示：高德 SDK 未就绪：KEY 无效、未绑定 Web 端 (JS API)',
+     src:'webapi.amap.com',provider:'amap',host:'webapi.amap.com',
+     mapState:'error',pill:'运行中 · 3 路数据源',ver:'1.1.17',count:1,stack:''},
+    {ts:now-60,kind:'resource',level:'error',
+     msg:'资源加载失败：https://webapi.amap.com/maps?<参数名:v,callback>',
+     src:'https://webapi.amap.com/maps?<参数名:v,callback>',
+     tag:'script',count:1,stack:''}
+  ];
+  var rtExportText='IP 动态感知（ipsense）· 运行时报错导出（离线预览）\n' +
+    '生成时间：2026-11-19 00:00:00\n应用版本：1.1.17\n' +
+    '[1] 概览\n  落盘记录总数 2 条\n\n' +
+    '[2] 地图 SDK 专项（用户最常反馈的「底图没加载」）\n' +
+    '  01 高德 SDK 未就绪：KEY 无效、未绑定 Web 端 (JS API)\n\n' +
+    '[3] 逐条明细（最新在前，已脱敏）\n' +
+    '001 map_sdk | 底图未显示：高德 SDK 未就绪\n' +
+    '002 resource | 资源加载失败：https://webapi.amap.com/maps\n\n' +
+    '[4] 反馈时请一并提供\n' +
+    '  1. 本文件  2. 运行日志诊断包  3. 复现步骤  4. 截图\n';
+  window.__rtPosted=[]; window.__rtExportHits=0;
   var live=[],rows=[];
   for(var j=0;j<24;j++){
     var ip=(j%3===0?'45.155.205.'+(j+10):(j%3===1?'218.106.90.'+(j+100):'192.168.3.'+(j+20)));
@@ -379,9 +404,23 @@ window.addEventListener('error',function(e){
       return Promise.resolve({ok:true,status:200,blob:function(){
         return Promise.resolve(new Blob([summaryText],{type:'text/markdown'}));}});
     else if(u.indexOf('api/config')>=0) d={ok:true,data:cfg};
-    else if(u.indexOf('api/health')>=0) d={ok:true,version:'1.1.16'};
+    else if(u.indexOf('api/health')>=0) d={ok:true,version:'1.1.17'};
     // 1.1.15：脱敏诊断包与区级手工补充
     else if(u.indexOf('api/diag/export')>=0) d=diagText;
+    // 1.1.17：运行时报错上报 / 查询 / 导出（export 必须排在 errors 之前）
+    else if(u.indexOf('api/runtime/errors/export')>=0){
+      window.__rtExportHits++;
+      d=rtExportText;
+    }
+    else if(u.indexOf('api/runtime/errors')>=0){
+      if(opt && String(opt.method||'').toUpperCase()==='POST'){
+        var posted=[];
+        try{ posted=JSON.parse((opt&&opt.body)||'{}').items||[]; }catch(eRt){}
+        window.__rtPosted=window.__rtPosted.concat(posted);
+        rtErrors=posted.concat(rtErrors).slice(0,200);
+        d={ok:true,saved:posted.length,total:rtErrors.length};
+      } else d={ok:true,data:rtErrors,total:rtErrors.length};
+    }
     else if(u.indexOf('api/geo/district')>=0){
       var nd='';
       try{ nd=String((JSON.parse((opt&&opt.body)||'{}').district)||'').trim().slice(0,40); }

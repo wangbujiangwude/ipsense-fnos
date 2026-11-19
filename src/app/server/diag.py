@@ -18,10 +18,14 @@ import platform
 MAX_LINES = 400
 READ_CAP = 2 * 1024 * 1024       # 单个日志最多回读 2 MB，避免大文件卡住 HTTP 线程
 
-# 配置里明确含密钥 / 出口 IP / 私有路径的键，直接剔除，不进入导出文本
+# 配置里明确含密钥 / 出口 IP / 精确坐标 / 私有路径的键，直接剔除，不进入导出文本。
+# 1.1.17：home_lat / home_lng 是 float，旧版 else 分支不过 scrub() 会原样导出
+# 10 米级坐标；home_label 与 summary_dir 也含位置 / 个人目录信息，一并剔除。
 DROP_CFG_KEYS = (
     "map_key", "map_keys", "map_custom", "home_ip", "home_proxy_ip",
     "home_geo", "home_source", "home_locate_at", "ignore_ips",
+    "home_lat", "home_lng", "home_label", "summary_dir",
+    "summary_latest", "summary_archive",
 )
 
 IPV4_RE = re.compile(r"\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b")
@@ -52,7 +56,11 @@ def scrub(text):
 
 
 def redact_config(cfg):
-    """配置白名单式脱敏：先剔键，再把路径等值里的 IP 也抹掉。"""
+    """配置白名单式脱敏：先剔键，再把字符串 / 结构里的 IP 也抹掉。
+
+    1.1.17：数值型配置（keep_days、web_port 等）对排障有用且不含个人信息，
+    保留原值；含精确坐标 / 位置描述的键已在 DROP_CFG_KEYS 里整体剔除。
+    """
     out = {}
     for k, v in (cfg or {}).items():
         if k in DROP_CFG_KEYS:
@@ -82,6 +90,29 @@ def tail(path, n=MAX_LINES):
         return lines[-n:] if lines else ["(文件为空)"]
     except Exception as e:
         return ["(读取失败：%s)" % e]
+
+
+# fnOS 应用中心每 30 秒写一条 main action=status 心跳。旧版直接取尾部 400 行，
+# 结果整段都是心跳，10:20 之前的 start / stop / install 记录全被挤掉。
+HEARTBEAT_RE = re.compile(r"action=status\b", re.I)
+
+
+def tail_filtered(path, n=MAX_LINES):
+    """回读更多行 → 折叠心跳 → 只把真实日志行放进导出文本。
+
+    心跳保留最近 3 条作时间参照，并写明折叠数量；故障记录不再被淹没。
+    """
+    # 心跳一天约 2880 行，读满 2000 行才能保住更早的 start / stop / 故障记录
+    lines = tail(path, max(n * 4, 2000))
+    if len(lines) == 1 and lines[0].startswith("(文件"):
+        return lines
+    beats = [x for x in lines if HEARTBEAT_RE.search(x)]
+    real = [x for x in lines if not HEARTBEAT_RE.search(x)]
+    out = list(real[-n:])
+    if beats:
+        out.append("(已折叠 %d 条 status 心跳；以下保留最近 3 条作为时间参照)" % len(beats))
+        out.extend("[心跳样本] " + x for x in beats[-3:])
+    return out or ["(文件为空)"]
 
 
 def dump_json(obj):
@@ -129,7 +160,8 @@ def build_bundle(app):
     L.append("IP 动态感知（ipsense）· 运行日志诊断包")
     L.append("生成时间：%s" % time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)))
     L.append("说明：本文件已自动脱敏。地图 KEY / 令牌 / 口令已抹除；")
-    L.append("      来访 IP 只保留前两段（例 220.205.*.*），不含完整 IP、邮箱、原始日志行。")
+    L.append("      来访 IP 只保留前两段（例 220.205.*.*），精确经纬度 / 本机位置描述 /")
+    L.append("      私有目录已从配置中剔除，不含完整 IP、邮箱、原始事件行。")
     L.append("      应用仍然只观测、不封禁、不改防火墙、不自动处置。")
     L.append("反馈时请连同：复现步骤、截图（含顶部状态标）、设备架构与 fnOS 版本一起提交。")
 
@@ -137,7 +169,7 @@ def build_bundle(app):
         dest = os.environ.get("TRIM_APPDEST", "")
         var = os.environ.get("TRIM_PKGVAR", "")
         ver = (getattr(sys.modules.get("__main__"), "VERSION", "")
-               or getattr(app, "version", "") or "1.1.16")
+               or getattr(app, "version", "") or "1.1.17")
         b.kv("应用版本", ver)
         b.kv("Python", sys.version.split()[0])
         b.kv("系统 / 架构", "%s / %s" % (platform.system(), platform.machine()))
@@ -210,23 +242,35 @@ def build_bundle(app):
         ]
         for title, path in files:
             b.head(title, path)
-            lines = tail(path, MAX_LINES)
+            lines = tail_filtered(path, MAX_LINES)
             if len(lines) == 1 and lines[0].startswith("(文件不存在"):
                 b.block(lines)
                 b.block(["(该路径不可写或未生成时为空，属正常情况)"])
             else:
                 b.block(lines)
-    b.safe("6. 运行日志（尾部 %d 行，已脱敏）" % MAX_LINES, logs)
+    b.safe("6. 运行日志（尾部 %d 行，已折叠心跳、已脱敏）" % MAX_LINES, logs)
+
+    # 1.1.17：浏览器侧运行时报错。rtlog 顶层会 import 本模块的 scrub，
+    # 因此这里必须延迟 import，避免循环依赖。
+    def runtime_errors():
+        from rtlog import format_section
+        rt = getattr(app, "rtlog", None)
+        items = rt.recent(100) if rt else []
+        b.block(["-- 来源：$TRIM_PKGVAR/runtime_errors.jsonl（独立落盘，不进 events.db） --"])
+        b.block(["-- 自动采集：JS 异常 / 地图 SDK 加载失败 / 资源失败 / 接口失败 --"])
+        b.block(format_section(items, 100))
+    b.safe("6.1 前端运行时报错（1.1.17，最近 100 条）", runtime_errors)
 
     def ending():
         b.block([
             "提交 Issue 时建议一并提供：",
-            "  1. 本诊断包（设置 → 最底部「运行日志一键导出」）",
-            "  2. 复现步骤：点了什么、期望什么、实际出现什么",
-            "  3. 截图 / 录屏，请保留顶部状态标与其悬停提示",
-            "  4. 设备架构（uname -m）与 fnOS 版本",
-            "  5. 安装的 FPK 文件名（all / x86 / arm）",
-            "  6. 问题出现的时间点（便于在日志里定位）",
+            "  1. 本诊断包（设置 → 最底部「导出运行日志」，已含前端报错摘要）",
+            "  2. 运行报错导出（同页「导出运行报错」，含 JS 异常 / 地图 SDK 明细）",
+            "  3. 复现步骤：点了什么、期望什么、实际出现什么",
+            "  4. 截图 / 录屏，请保留顶部状态标与其悬停提示",
+            "  5. 设备架构（uname -m）与 fnOS 版本",
+            "  6. 安装的 FPK 文件名（all / x86 / arm）",
+            "  7. 问题出现的时间点（便于在日志里定位）",
             "",
             "仓库：https://github.com/wangbujiangwude/ipsense-fnos",
             "排障指南：docs/排障指南.md",

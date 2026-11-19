@@ -82,7 +82,17 @@ FPK
 
 ### 功能演进
 
-**1.1.16（当前版本）**
+**1.1.17（当前版本）**
+
+- 🆕 **运行时报错终于能导出了**：此前诊断包只有服务端日志（主日志 / `cmd.log` / `app.log`），浏览器侧的 `window.onerror`、`unhandledrejection`、`<script>` 加载失败、接口 4xx/5xx 与超时只显示在页面上，一关页面就没了。用户反馈「地图 SDK 没有正常加载」时，交出来的日志里完全没有这条线索。1.1.17 在前端加全局采集器（捕获阶段监听 `error`，才能拿到 script/link 的加载失败），内存环形缓冲 200 条、同因 5 秒内合并（接口类 60 秒），每批最多 20 条 POST `/api/runtime/errors`；失败静默退避，绝不因上报本身再抛异常。
+- 🆕 **地图 SDK 专项**：`setMapState('error')` 会把服务商、SDK 域名、原始提示一并落盘；资源加载失败另记一条 `resource`，导出文本里单独列「[2] 地图 SDK 专项」，KEY 无效 / 域名被拦 / 白名单不符一眼可分。
+- 🆕 **两份导出，各司其职**：设置最底部「导出运行报错」只收录真正报出来的错（含堆栈、次数、当时底图状态与顶部状态标），适合直接交给 AI 定位；「导出运行日志」仍是完整诊断包，并新增「6.1 前端运行时报错」摘要章节。「查看最近报错」可在界面里直接翻最近 100 条。
+- 🧩 **独立落盘、字段白名单、双重脱敏**：`$TRIM_PKGVAR/runtime_errors.jsonl`，不进 `events.db`、不污染主日志；只保留 17 个白名单字段并做长度截断，复用 `diag.scrub()` 抹除 KEY / 令牌 / 邮箱 / 来访 IP；前端 `rtSafeUrl()` 只保留 URL 的参数名、不落参数值。环形上限 500 条 / 512 KB，超出裁掉最旧记录。
+- 🐛 **诊断包隐私口径收紧**：上一轮解读用户导出包时发现 `home_lat` / `home_lng`（10 米级精确坐标）、`home_label`、`summary_dir` 原样出现在配置里，float 值还绕过 `scrub()`。现整体剔除，文件头说明也改成与实际一致。
+- 🐛 **心跳不再淹没故障记录**：fnOS 应用中心每 30 秒写一条 `main action=status`，旧版取尾部 400 行几乎全是心跳，10:20 之前的 `start` / `stop` / 安装记录被裁掉。改为回读最多 2000 行 → 折叠心跳（只留最近 3 条样本与计数）→ 真实日志行全部保留。
+- 🧩 **验收**：`tools/smoke_117_rtlog.py` 30/30（脱敏、白名单、环形上限、三条路由、心跳折叠），`tools/verify_117_preview.py` 18/18（真实 Chrome 制造 JS 异常 / Promise 拒绝 / script 加载失败并验证导出），真机故障注入见 1.1.17 回归报告。
+
+**1.1.16**
 
 - 🐛 **真机弧线全部不显示**：1.1.15 为跨日期变更线长弧生成 `-360 / 0 / +360` 三份世界副本折线，真机腾讯地图 GL 的 `MultiPolyline` 只接受 `[-180,180]` 经度，实测美国方向产出 `-540°~+540°`、297 个点里 196 个越界，整层折线被拒绝渲染，两张地图一条线都没有。离线预览走 Canvas 降级、上一轮真机验收又主动屏蔽了外网底图 SDK，因此没覆盖这条路径。修复为 SDK 侧统一归一化到合法窗口并在 `±180` 边界分段（`wrapSegs`），Canvas 侧继续用本机中心连续窗口让两段首尾相接；`sdkLat()` 再做坐标钳制兜底。`tools/check_116_geometry.mjs` 实测 4 组方向全部 0 越界。
 - 🐛 **设置开关点不动**：`sw()` 生成的 checkbox 是 `0×0` 且 `opacity:0`，可见滑块是 label 外的 `<i>`，点击不会触发 checkbox。修复为 `label[for]` + input 绝对定位铺满 `.switch`，`<i>` 设 `pointer-events:none`。
@@ -491,7 +501,7 @@ $PY tools/make_icon.py                 # 生成图标
 $PY tools/selftest.py                  # 离线自检
 node --check src/app/ui/app.js         # 前端语法
 PY=$PY bash tools/build_fpk.sh         # 打包（LF / 可执行位 / py_compile / checksum）
-$PY tools/deploy.py --fpk build/ipsense_1.1.16_all.fpk
+$PY tools/deploy.py --fpk build/ipsense_1.1.17_all.fpk
 ```
 
 `build_fpk.sh` 用 `tarfile` 显式写权限位（`cmd/*` = 0755），避免从 Windows 打包时丢可执行位；
@@ -505,9 +515,9 @@ ipsense 是纯 Python 标准库 + JS/CSS + `ip2region` 数据文件，没有任�
 
 | 安装包 | `platform` | 适用 |
 |---|---|---|
-| `ipsense_1.1.16_all.fpk` | `all` | 通用，x86 与 ARM 都能装，**推荐** |
-| `ipsense_1.1.16_x86.fpk` | `x86` | x86_64 设备，或按架构分发的应用源 |
-| `ipsense_1.1.16_arm.fpk` | `arm` | aarch64 设备，或按架构分发的应用源 |
+| `ipsense_1.1.17_all.fpk` | `all` | 通用，x86 与 ARM 都能装，**推荐** |
+| `ipsense_1.1.17_x86.fpk` | `x86` | x86_64 设备，或按架构分发的应用源 |
+| `ipsense_1.1.17_arm.fpk` | `arm` | aarch64 设备，或按架构分发的应用源 |
 
 `build_fpk.sh` 打完通用包后会自动调用 `tools/build_multiarch.py` 派生另两个包（`SKIP_MULTIARCH=1` 可跳过）。派生脚本不修改 `src/manifest`、不改动 `all` 包，且逐成员校验「除 `platform` 行外字节与权限完全一致」。
 

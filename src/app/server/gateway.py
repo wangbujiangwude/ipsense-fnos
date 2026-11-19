@@ -18,7 +18,7 @@ import urllib.parse
 import traceback
 
 APP_NAME = "ipsense"
-VERSION = "1.1.16"
+VERSION = "1.1.17"
 PREFIX = "/app/" + APP_NAME
 APP_DEST = os.environ.get("TRIM_APPDEST", "/var/apps/%s/target" % APP_NAME)
 VAR_DIR = os.environ.get("TRIM_PKGVAR") or "/vol1/@appdata/%s" % APP_NAME
@@ -43,6 +43,7 @@ from store import Store                                      # noqa: E402
 from collector import Collector                              # noqa: E402
 from locate import current as locate_current, run as locate_run   # noqa: E402
 from diag import build_bundle                                       # noqa: E402
+from rtlog import RuntimeLog, build_export as build_runtime_export  # noqa: E402
 from summary import (                                             # noqa: E402
     SummaryWriter, build_summary, write_summary, validate_dir,
     path_allowed, LATEST_NAME,
@@ -75,6 +76,8 @@ class App(object):
     def __init__(self):
         os.makedirs(VAR_DIR, exist_ok=True)
         self.settings = Settings(CFG_PATH)
+        # 1.1.17：浏览器侧运行时报错独立落盘，不进 events.db / 主运行日志
+        self.rtlog = RuntimeLog(VAR_DIR)
         self.geo = GeoResolver(DATA_DIR)
         self.store = Store(DB_PATH, int(self.settings.get("keep_days", 30) or 30))
         # 1.0.9：升级后订正历史脏值（英文国名 / province=中国 / 坐标与省份脱钩）
@@ -477,6 +480,26 @@ def api(app, method, path, query, body):
     # 1.1.15：设置界面「运行日志一键导出」，全脱敏单文件，供 Issue 直接附上
     if path == "/api/diag/export":
         return 200, build_bundle(app).encode("utf-8"), "text/plain; charset=utf-8"
+    # 1.1.17：浏览器侧运行时报错。前端批量上报 → 独立 JSONL → 可查询 / 可导出。
+    # 不提供删除接口，字段白名单与脱敏在 rtlog.py 内完成。
+    if path == "/api/runtime/errors" and method == "POST":
+        try:
+            payload = json.loads(body.decode("utf-8", "replace") or "{}")
+            if not isinstance(payload, dict):
+                payload = {}
+        except (ValueError, TypeError):
+            payload = {}
+        n = app.rtlog.add(payload.get("items"), payload.get("ctx"))
+        return 200, {"ok": True, "saved": n, "total": app.rtlog.count()}
+    if path == "/api/runtime/errors":
+        try:
+            lim = min(200, max(1, int(p.get("limit", 100) or 100)))
+        except (TypeError, ValueError):
+            lim = 100
+        return 200, {"ok": True, "total": app.rtlog.count(),
+                     "data": app.rtlog.recent(lim)}
+    if path == "/api/runtime/errors/export":
+        return 200, build_runtime_export(app).encode("utf-8"), "text/plain; charset=utf-8"
     if path == "/api/geo/district" and method == "POST":
         try:
             payload = json.loads(body.decode("utf-8") if isinstance(body, bytes)

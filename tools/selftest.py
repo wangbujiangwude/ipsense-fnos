@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """本地离线自检：不连设备，验证归属库、日志解析、SQLite 聚合、API 与首页内联。"""
 import os
+import re
 import sys
 import time
 import json
@@ -1601,7 +1602,7 @@ check("设置界面渲染汇总状态行与统计窗口",
 check("CSS 新增汇总日志样式",
       ".sum-path{" in _c23 and ".sum-preview{" in _c23)
 check("首页页脚仍标注当前版本能力（历史节，动态口径）",
-      CUR in _h23 and "运行日志" in _h23)
+      CUR in _h23 and ("运行日志" in _h23 or "运行报错" in _h23))
 check("预览页含 #summary 验收入口",
       "#summary" in _p23 and "summaryServiceBox" in _p23)
 check("预览页含 #picker-* 模拟回跳",
@@ -2185,7 +2186,10 @@ check("版本 " + CUR + " 已同步到清单 / 后端 / 预览 / 文档",
       ("**" + CUR + "（当前版本）**") in _rd29 and
       "### 1.1.15 新增了什么" in _dc29 and
       ("ipsense_" + CUR + "_all.fpk") in _rm29)
-_ch29_cur = _ch29.split("**" + CUR + "（当前版本）**")[1].split("**1.1.15**")[0]
+# 1.1.17：按「下一个版本行」切，避免把 1.1.16 等历史段算进当前版本
+_ch29_cur = re.split(r"\*\*1\.1\.\d+\*\*",
+                     _ch29.split("**" + CUR + "（当前版本）**")[1],
+                     maxsplit=1)[0]
 check("CHANGELOG " + CUR + " 只用三种 emoji",
       not any(x in _ch29_cur
               for x in ("✨", "⌨️", "🧹", "📦", "🛡️", "📊", "🔧", "⚡")))
@@ -2457,20 +2461,185 @@ check("⑤ 1.1.16 预览验收脚本已入库",
 # 版本 / 文档 / 口径
 check("版本 " + CUR + " 已同步到清单与首页",
       ("version                    = " + CUR) in _m30 and CUR in _h30)
-check("CHANGELOG / 详版 / 使用说明均有 1.1.16 章节",
-      "**1.1.16（当前版本）**" in _ch30 and
-      "**1.1.16（当前版本）**" in _rd30 and
+check("CHANGELOG / 详版 / 使用说明保留 1.1.16 历史章节",
+      "**1.1.16**" in _ch30 and
+      "**1.1.16**" in _rd30 and
       "### 1.1.16 新增了什么" in _dc30)
 check("排障指南订正了 SDK 世界副本口径",
       "[-180,180]" in _tg30 and "±360" in _tg30)
 check("根 README 安装表已滚动",
-      "ipsense_1.1.16_all.fpk" in _rm30 and
-      "ipsense_1.1.16_arm.fpk" in _rm30)
+      ("ipsense_" + CUR + "_all.fpk") in _rm30 and
+      ("ipsense_" + CUR + "_arm.fpk") in _rm30)
 check("只观测口径无回归",
       "只观测" in _j30 and "不封禁" in _rd30)
 check("1.1.15 历史事实未被改写",
       "### 1.1.15 新增了什么" in _dc30 and
       "**1.1.15**" in _ch30)
+
+
+print("\n=== 31. 1.1.17 运行时报错采集与一键导出 ===")
+_j31 = open(os.path.join(UI, "app.js"), encoding="utf-8").read()
+_h31 = open(os.path.join(UI, "index.html"), encoding="utf-8").read()
+_gw31 = open(os.path.join(SERVER, "gateway.py"), encoding="utf-8").read()
+_dg31 = open(os.path.join(SERVER, "diag.py"), encoding="utf-8").read()
+_p31 = open(os.path.join(ROOT, "tools", "make_preview.py"), encoding="utf-8").read()
+_ch31 = open(os.path.join(ROOT, "docs", "CHANGELOG.md"), encoding="utf-8").read()
+_rd31 = open(os.path.join(ROOT, "docs", "README.md"), encoding="utf-8").read()
+_dc31 = open(os.path.join(ROOT, "docs", "使用说明.md"), encoding="utf-8").read()
+_tg31 = open(os.path.join(ROOT, "docs", "排障指南.md"), encoding="utf-8").read()
+_rt31_path = os.path.join(SERVER, "rtlog.py")
+_rt31 = open(_rt31_path, encoding="utf-8").read() if os.path.isfile(_rt31_path) else ""
+
+# ① 后端：独立模块、白名单、脱敏、环形上限
+check("① 新增独立 rtlog 模块（运行时报错不走主日志）",
+      os.path.isfile(_rt31_path) and
+      "class RuntimeLog" in _rt31 and "def build_export" in _rt31 and
+      "def format_section" in _rt31 and
+      "runtime_errors.jsonl" in _rt31 and
+      "INSERT INTO" not in _rt31 and "SELECT " not in _rt31)
+check("① 字段白名单 + 长度截断 + 复用 diag.scrub 脱敏",
+      "STR_FIELDS = {" in _rt31 and "NUM_FIELDS" in _rt31 and
+      "from diag import scrub" in _rt31 and "def _clip" in _rt31)
+check("① 环形上限 500 条 / 512 KB，裁掉最旧",
+      "MAX_ITEMS = 500" in _rt31 and "MAX_FILE_BYTES" in _rt31 and
+      "def _trim" in _rt31 and "MAX_BATCH" in _rt31)
+check("① 导出含概览 / 地图 SDK 专项 / 逐条明细 / 反馈清单",
+      all(x in _rt31 for x in ("[1] 概览", "[2] 地图 SDK 专项",
+                               "[3] 逐条明细", "[4] 反馈时请一并提供")))
+check("① 空日志也有可读说明，不抛异常",
+      "尚无前端运行时报错记录" in _rt31 and "本次记录里没有地图 SDK" in _rt31)
+
+# ② 后端路由 / 诊断包并入
+check("② gateway 新增三条运行报错路由",
+      '"/api/runtime/errors" and method == "POST"' in _gw31 and
+      '"/api/runtime/errors"' in _gw31 and
+      '"/api/runtime/errors/export"' in _gw31 and
+      "build_runtime_export(app)" in _gw31)
+check("② App 启动时挂载 rtlog",
+      "self.rtlog = RuntimeLog(VAR_DIR)" in _gw31 and
+      "from rtlog import RuntimeLog" in _gw31)
+check("② 不提供删除接口，避免误删报错证据",
+      "/api/runtime/errors/clear" not in _gw31 and
+      "os.remove" not in _rt31)
+check("② 诊断包新增 6.1 前端运行时报错章节",
+      "6.1 前端运行时报错" in _dg31 and
+      "from rtlog import format_section" in _dg31 and
+      _dg31.index("def runtime_errors()") <
+      _dg31.index("from rtlog import format_section"))
+check("② 心跳折叠：status 不再淹没早期故障记录",
+      "HEARTBEAT_RE" in _dg31 and "def tail_filtered" in _dg31 and
+      "max(n * 4, 2000)" in _dg31 and "已折叠" in _dg31)
+check("② 隐私收紧：精确坐标 / 位置描述 / 私有目录剔除",
+      all(('"%s"' % k) in _dg31 for k in
+          ("home_lat", "home_lng", "home_label", "summary_dir")) and
+      "1.1.17：home_lat" in _dg31)
+
+# ③ 前端采集器
+check("③ 全局采集器：环形缓冲 / 同因合并 / 批量上报 / 失败退避",
+      all(x in _j31 for x in
+          ("var RT = {", "function rtPush(o)", "function rtFlush()",
+           "function rtSchedule()", "function rtRetry(items)",
+           "function rtDupWindow(kind)", "rtPush({ kind: 'api'")))
+check("③ 捕获阶段监听 error，才能拿到 SDK script 加载失败",
+      "window.addEventListener('error'" in _j31 and "}, true);" in _j31 and
+      "unhandledrejection" in _j31 and "kind: 'resource'" in _j31)
+check("③ URL 只留参数名，不落 KEY / 票据值",
+      "function rtSafeUrl" in _j31 and "?<参数名:" in _j31 and
+      "JSON.stringify({ items: items, ctx: rtCtx() })" in _j31)
+check("③ 底图失败单独记 map_sdk（服务商 / 域名 / 原始提示）",
+      "kind: 'map_sdk'" in _j31 and "setMapState" in _j31 and
+      "RT_HOST" in _j31 and "S.tmapError" in _j31)
+check("③ 页面版本进入报错上下文",
+      "S.version = r.version" in _j31 and "api('api/health')" in _j31)
+check("③ 上报失败不产生新异常（退避 + 静默）",
+      "RT.blocked" in _j31 and "rtRetry(items)" in _j31 and
+      "Math.min(60000, 5000 * RT.fails)" in _j31)
+
+# ④ 设置页导出入口
+check("④ 设置页新增运行报错导出 / 查看两个按钮",
+      all(x in _j31 for x in
+          ("btnRtExport", "btnRtView", "btnDiagExport", "btnDiagView")) and
+      "运行报错一键导出（1.1.17）" in _j31)
+check("④ 导出与查看函数齐备",
+      "function exportRuntimeErrors()" in _j31 and
+      "function fetchRuntimeText()" in _j31 and
+      "api/runtime/errors/export" in _j31 and
+      "api/runtime/errors?limit=100" in _j31)
+check("④ 原运行日志诊断包入口未回归",
+      "function exportDiag()" in _j31 and "function fetchDiag()" in _j31 and
+      "问题反馈 · 运行日志一键导出" in _j31)
+
+# ⑤ 预览 mock 与工具链
+check("⑤ 预览 mock 支持上报 / 查询 / 导出三条新接口",
+      "api/runtime/errors/export" in _p31 and
+      "api/runtime/errors" in _p31 and "__rtPosted" in _p31 and
+      "__rtExportHits" in _p31 and "rtExportText" in _p31)
+check("⑤ 预览诊断包含 6.1 摘要，版本同步 " + CUR,
+      "6.1 前端运行时报错" in _p31 and
+      ("version:'" + CUR + "'") in _p31)
+check("⑤ 专项冒烟 / 预览验收 / 版本滚动脚本已入库",
+      all(os.path.isfile(os.path.join(ROOT, "tools", f)) for f in
+          ("smoke_117_rtlog.py", "verify_117_preview.py")) and
+      os.path.isfile(os.path.join(ROOT, "build", "roll_117_version.py")))
+
+# ⑥ 文档与版本
+check("⑥ 版本 " + CUR + " 已同步到清单 / 首页 / 安装表",
+      gateway.VERSION == CUR and ("version                    = " + CUR) in
+      open(os.path.join(ROOT, "src", "manifest"), encoding="utf-8").read() and
+      CUR in _h31 and
+      ("ipsense_" + CUR + "_all.fpk") in
+      open(os.path.join(ROOT, "README.md"), encoding="utf-8").read())
+check("⑥ CHANGELOG " + CUR + " 只用三种 emoji、一行一事",
+      not any(x in _ch31.split("**" + CUR + "（当前版本）**")[1]
+              .split("**1.1.16**")[0]
+              for x in ("✨", "⌨️", "🧹", "📦", "🛡️", "📊", "🔧", "⚡")))
+check("⑥ 详版 / 使用说明 / 排障指南都有 1.1.17 章节",
+      "**1.1.17（当前版本）**" in _rd31 and
+      "### 1.1.17 新增了什么" in _dc31 and
+      "运行报错" in _tg31 and "runtime_errors.jsonl" in _tg31)
+check("⑥ 只观测口径无回归",
+      "只观测" in _j31 and "不封禁" in _rd31 and
+      "不自动处置" in _rt31)
+
+# ⑦ 运行时验证：真 App 走一遍上报 → 查询 → 导出 → 诊断包
+try:
+    import rtlog as _rtm31
+    rt31 = getattr(app, "rtlog", None)
+    check("⑦ App 实例已挂载 rtlog", rt31 is not None and hasattr(rt31, "add"))
+    body31 = json.dumps({"items": [
+        {"kind": "map_sdk", "level": "error",
+         "msg": "底图未显示：高德 SDK 未就绪 key=SUPERSECRET123456 client 220.205.91.142",
+         "src": "https://webapi.amap.com/maps?v=2.0&key=SUPERSECRET123456",
+         "provider": "amap", "host": "webapi.amap.com"},
+    ], "ctx": {"ver": CUR, "provider": "amap"}}, ensure_ascii=False).encode("utf-8")
+    r31 = gateway.api(app, "POST", "/api/runtime/errors", "", body31)
+    check("⑦ POST /api/runtime/errors 落盘成功",
+          len(r31) == 2 and r31[0] == 200 and r31[1].get("saved") == 1)
+    q31 = gateway.api(app, "GET", "/api/runtime/errors", "limit=10", b"")
+    check("⑦ GET 查询回读且已脱敏",
+          len(q31) == 2 and q31[0] == 200 and
+          any("高德 SDK 未就绪" in str(x.get("msg", ""))
+              for x in q31[1].get("data", [])) and
+          "SUPERSECRET123456" not in json.dumps(q31[1], ensure_ascii=False) and
+          "220.205.91.142" not in json.dumps(q31[1], ensure_ascii=False))
+    e31 = gateway.api(app, "GET", "/api/runtime/errors/export", "", b"")
+    txt31 = e31[1].decode("utf-8") if isinstance(e31[1], bytes) else ""
+    check("⑦ 导出为 text/plain 且含地图 SDK 专项",
+          len(e31) == 3 and e31[0] == 200 and "text/plain" in e31[2] and
+          "[2] 地图 SDK 专项" in txt31 and "高德 SDK 未就绪" in txt31)
+    check("⑦ 导出不含 KEY 明文与完整来访 IP",
+          "SUPERSECRET123456" not in txt31 and
+          "220.205.91.142" not in txt31)
+    b31 = _dgm29.build_bundle(app)
+    check("⑦ 诊断包运行时含 6.1 章节且沿用同一脱敏",
+          "6.1 前端运行时报错" in b31 and
+          "SUPERSECRET123456" not in b31 and
+          "220.205.91.142" not in b31 and
+          "高德 SDK 未就绪" in b31)
+    check("⑦ 诊断包运行日志章节保留（心跳折叠入口已生效）",
+          "运行日志（尾部" in b31)
+except Exception as _e31x:
+    check("⑦ 运行时验证", False, repr(_e31x))
 
 
 print("\n=== 结果：%d 项通过 / %d 项失败 ===" % (ok, len(fail)))
