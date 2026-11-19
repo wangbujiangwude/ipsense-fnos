@@ -215,25 +215,25 @@ window.addEventListener('error',function(e){
   var diagText='IP 动态感知（ipsense）· 运行日志诊断包（离线预览）\n' +
     '生成时间：2026-11-19 00:00:00\n' +
     '说明：本文件已自动脱敏。地图 KEY / 令牌 / 口令已抹除；来访 IP 只保留前两段。\n\n' +
-    '1. 环境与应用状态\n  版本：1.1.18 · 运行中 · 数据源 3 路\n\n' +
+    '1. 环境与应用状态\n  版本：1.1.19 · 运行中 · 数据源 3 路\n\n' +
     '2. 主运行日志（尾部）\n  2026-11-19 00:00:01 INFO collector 已启动\n\n' +
     '3. 数据源状态\n  本机 SSH 已读取 · 本机 Web 已读取 · 路由器 syslog 文件不存在\n\n' +
-    '6.1 前端运行时报错（1.1.18，最近 100 条）\n' +
+    '6.1 前端运行时报错（1.1.19，最近 100 条）\n' +
     '  001 底图未显示：高德 SDK 未就绪 · map_sdk · KEY 无效\n';
-  // 1.1.18：运行时报错离线样本。预览页不连后端，POST 上报与查询都在这里闭环，
+  // 1.1.19：运行时报错离线样本。预览页不连后端，POST 上报与查询都在这里闭环，
   // 验收脚本可真实触发一个 JS 异常，再看它是否被采集并进入导出文本。
   var rtErrors=[
     {ts:now-120,kind:'map_sdk',level:'error',
      msg:'底图未显示：高德 SDK 未就绪：KEY 无效、未绑定 Web 端 (JS API)',
      src:'webapi.amap.com',provider:'amap',host:'webapi.amap.com',
-     mapState:'error',pill:'运行中 · 3 路数据源',ver:'1.1.18',count:1,stack:''},
+     mapState:'error',pill:'运行中 · 3 路数据源',ver:'1.1.19',count:1,stack:''},
     {ts:now-60,kind:'resource',level:'error',
      msg:'资源加载失败：https://webapi.amap.com/maps?<参数名:v,callback>',
      src:'https://webapi.amap.com/maps?<参数名:v,callback>',
      tag:'script',count:1,stack:''}
   ];
   var rtExportText='IP 动态感知（ipsense）· 运行时报错导出（离线预览）\n' +
-    '生成时间：2026-11-19 00:00:00\n应用版本：1.1.18\n' +
+    '生成时间：2026-11-19 00:00:00\n应用版本：1.1.19\n' +
     '[1] 概览\n  落盘记录总数 2 条\n\n' +
     '[2] 地图 SDK 专项（用户最常反馈的「底图没加载」）\n' +
     '  01 高德 SDK 未就绪：KEY 无效、未绑定 Web 端 (JS API)\n\n' +
@@ -246,7 +246,7 @@ window.addEventListener('error',function(e){
   var live=[],rows=[];
   for(var j=0;j<24;j++){
     var ip=(j%3===0?'45.155.205.'+(j+10):(j%3===1?'218.106.90.'+(j+100):'192.168.3.'+(j+20)));
-    // 1.1.18：端口按证据链补录并带 port_src。覆盖五种来源 + 一种「未记录」，
+    // 1.1.19：端口按证据链补录并带 port_src。覆盖五种来源 + 一种「未记录」，
     // 其中 referer 读出的 5666 用于验收「有来源就不隐藏」的 portLabel 修复。
     var pc=j%6, p=0, psrc='';
     if(pc===0){p=8443;psrc='log_tail';}
@@ -413,10 +413,10 @@ window.addEventListener('error',function(e){
       return Promise.resolve({ok:true,status:200,blob:function(){
         return Promise.resolve(new Blob([summaryText],{type:'text/markdown'}));}});
     else if(u.indexOf('api/config')>=0) d={ok:true,data:cfg};
-    else if(u.indexOf('api/health')>=0) d={ok:true,version:'1.1.18'};
+    else if(u.indexOf('api/health')>=0) d={ok:true,version:'1.1.19'};
     // 1.1.15：脱敏诊断包与区级手工补充
     else if(u.indexOf('api/diag/export')>=0) d=diagText;
-    // 1.1.18：运行时报错上报 / 查询 / 导出（export 必须排在 errors 之前）
+    // 1.1.19：运行时报错上报 / 查询 / 导出（export 必须排在 errors 之前）
     else if(u.indexOf('api/runtime/errors/export')>=0){
       window.__rtExportHits++;
       d=rtExportText;
@@ -430,7 +430,7 @@ window.addEventListener('error',function(e){
         d={ok:true,saved:posted.length,total:rtErrors.length};
       } else d={ok:true,data:rtErrors,total:rtErrors.length};
     }
-    // 1.1.18：站内查询（复用在线多源核验），不依赖第三方反爬页面
+    // 1.1.19：站内查询（复用在线多源核验），不依赖第三方反爬页面
     else if(u.indexOf('api/geo/verify')>=0) d={ok:true,cached:false,ip:'220.205.86.196',
       geo:{country:'中国',province:'安徽省',city:'合肥市',district:'蜀山区'},
       verification:{confidence:'high',online_sources:3,
@@ -482,7 +482,7 @@ def main():
         with open(os.path.join(UI, name), "r", encoding="utf-8") as f:
             return f.read()
     html = rd("index.html")
-    # 1.1.18：单文件预览页把投喂二维码内联成 data URI，否则 file:// 下
+    # 1.1.19：单文件预览页把投喂二维码内联成 data URI，否则 file:// 下
     # images/sponsor.png 相对路径失效，关于弹窗截图会显示破图占位。
     sponsor = os.path.join(UI, "images", "sponsor.png")
     if os.path.isfile(sponsor):

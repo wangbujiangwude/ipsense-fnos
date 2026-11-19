@@ -4015,14 +4015,28 @@
 
   // ---- 1.1.18 · 关于弹窗 ----
   function openAbout() {
+    closeSponsor();
     $('aboutMask').classList.add('on');
     $('aboutCard').setAttribute('aria-hidden', 'false');
     setMapScroll(false);
   }
   function closeAbout() {
+    closeSponsor();
     $('aboutMask').classList.remove('on');
     $('aboutCard').setAttribute('aria-hidden', 'true');
     if (!drawerOpen() && !S.zoomOn) setMapScroll(true);
+  }
+
+  // ---- 1.1.19 · 投喂二维码独立放大弹层 ----
+  // 旧版把二维码塞在关于卡片里展开，卡片会撑出滚动条、标题被滚出视野，
+  // 图片也只有 210px。现在单独弹一层，放大到约 460px，关于页保持原样。
+  function openSponsor() {
+    $('sponsorMask').classList.add('on');
+    $('sponsorBox').setAttribute('aria-hidden', 'false');
+  }
+  function closeSponsor() {
+    $('sponsorMask').classList.remove('on');
+    $('sponsorBox').setAttribute('aria-hidden', 'true');
   }
 
   function bind() {
@@ -4103,6 +4117,8 @@
     $('zoomMask').onclick = function () { closeCardZoom(false); };
     document.addEventListener('keydown', function (e) {
       if (e.key !== 'Escape') return;
+      // 1.1.19：二维码灯箱在最上层，ESC 先收它，关于页仍留在画面里
+      if ($('sponsorMask').classList.contains('on')) { closeSponsor(); return; }
       if ($('aboutMask').classList.contains('on')) { closeAbout(); return; }
       if (S.zoomOn) { closeCardZoom(false); return; }
       if ($('mask').classList.contains('on')) closeDrawers();
@@ -4156,12 +4172,11 @@
     $('btnAbout').onclick = openAbout;
     $('aboutClose').onclick = closeAbout;
     $('aboutMask').onclick = function (e) { if (e.target === this) closeAbout(); };
-    $('btnSponsor').onclick = function () {
-      var box = $('aboutSponsor');
-      box.hidden = !box.hidden;
-      if (!box.hidden && box.scrollIntoView) {
-        box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-      }
+    $('btnSponsor').onclick = openSponsor;
+    $('sponsorClose').onclick = closeSponsor;
+    $('sponsorMask').onclick = function (e) {
+      // 点遮罩空白处或图片外的舞台区域都收起；点二维码本身不收
+      if (e.target === this || e.target.classList.contains('sponsor-stage')) closeSponsor();
     };
     Array.prototype.forEach.call(document.querySelectorAll('[data-copy]'), function (b) {
       b.onclick = function () {

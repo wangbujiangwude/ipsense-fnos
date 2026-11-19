@@ -82,7 +82,13 @@ FPK
 
 ### 功能演进
 
-**1.1.18（当前版本）**
+**1.1.19（当前版本）**
+
+- 🆕 **投喂二维码独立弹层**：`1.1.18` 把二维码内联展开在关于卡片底部，点击后卡片被撑出滚动条、标题被滚出视野，图片也只有 `210px`。`1.1.19` 改为 `sponsorMask` 独立灯箱，点【投喂入口】单独弹出，关于卡片保持原样不滚动。
+- 🧩 **放大与关闭**：图片宽度由 `210px` 提升到 `min(76vw, 460px)`（约 2 倍），配合 2x 源图仍清晰；灯箱 `z-index:14000` 高于关于弹窗，支持关闭按钮、点遮罩 / 舞台空白处、ESC 三种收起方式，ESC 优先收灯箱且关于页保持打开。
+- 🧩 **无回归**：`openAbout()` / `closeAbout()` 都会先 `closeSponsor()`，避免浮层残留；二维码图随包分发不变，离线预览页仍内联为 data URI。
+
+**1.1.18**
 
 - 🆕 **「关于」页**：顶栏「设置」左侧新增「关于」，仿飞牛生态关于弹窗排版，写清使用说明、注意事项、开发者 `WangShao`、【投喂入口】（点开显示二维码）、企鹅群 `1132993836` 与可点击跳转的 GitHub 项目主页。
 - 🆕 **在线校验真的能复制了**：`1.1.16` 在 fnOS 内嵌 WebView 里 `navigator.clipboard.writeText` 被拒绝且静默吞掉，用户点了没反应。`1.1.18` 先同步 `window.open`（保持用户手势不被拦截），再用 `clipboard API → document.execCommand('copy')` 两级降级，成功 / 失败都明确 toast；另加「仅复制 IP」按钮。
@@ -512,7 +518,7 @@ $PY tools/make_icon.py                 # 生成图标
 $PY tools/selftest.py                  # 离线自检
 node --check src/app/ui/app.js         # 前端语法
 PY=$PY bash tools/build_fpk.sh         # 打包（LF / 可执行位 / py_compile / checksum）
-$PY tools/deploy.py --fpk build/ipsense_1.1.18_all.fpk
+$PY tools/deploy.py --fpk build/ipsense_1.1.19_all.fpk
 ```
 
 `build_fpk.sh` 用 `tarfile` 显式写权限位（`cmd/*` = 0755），避免从 Windows 打包时丢可执行位；
@@ -526,9 +532,9 @@ ipsense 是纯 Python 标准库 + JS/CSS + `ip2region` 数据文件，没有任�
 
 | 安装包 | `platform` | 适用 |
 |---|---|---|
-| `ipsense_1.1.18_all.fpk` | `all` | 通用，x86 与 ARM 都能装，**推荐** |
-| `ipsense_1.1.18_x86.fpk` | `x86` | x86_64 设备，或按架构分发的应用源 |
-| `ipsense_1.1.18_arm.fpk` | `arm` | aarch64 设备，或按架构分发的应用源 |
+| `ipsense_1.1.19_all.fpk` | `all` | 通用，x86 与 ARM 都能装，**推荐** |
+| `ipsense_1.1.19_x86.fpk` | `x86` | x86_64 设备，或按架构分发的应用源 |
+| `ipsense_1.1.19_arm.fpk` | `arm` | aarch64 设备，或按架构分发的应用源 |
 
 `build_fpk.sh` 打完通用包后会自动调用 `tools/build_multiarch.py` 派生另两个包（`SKIP_MULTIARCH=1` 可跳过）。派生脚本不修改 `src/manifest`、不改动 `all` 包，且逐成员校验「除 `platform` 行外字节与权限完全一致」。
 

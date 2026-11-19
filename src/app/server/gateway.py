@@ -18,7 +18,7 @@ import urllib.parse
 import traceback
 
 APP_NAME = "ipsense"
-VERSION = "1.1.18"
+VERSION = "1.1.19"
 PREFIX = "/app/" + APP_NAME
 APP_DEST = os.environ.get("TRIM_APPDEST", "/var/apps/%s/target" % APP_NAME)
 VAR_DIR = os.environ.get("TRIM_PKGVAR") or "/vol1/@appdata/%s" % APP_NAME

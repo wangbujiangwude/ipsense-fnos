@@ -2766,7 +2766,7 @@ check("⑤ 关于页内容完整（说明 / 注意 / 开发者 / 投喂 / 群 / 
 check("⑤ 投喂二维码图片已随包分发且非空",
       os.path.isfile(_img32) and os.path.getsize(_img32) > 10000)
 check("⑤ 关于弹窗样式与 ESC 关闭",
-      ".about-mask{" in _css32 and ".about-sponsor" in _css32 and
+      ".about-mask{" in _css32 and ".about-mask.on" in _css32 and
       "$('aboutMask').classList.contains('on')" in _j32)
 check("⑤ 预览 mock 支持站内查询、版本同步 " + CUR,
       "api/geo/verify')>=0" in _p32 and ("version:'" + CUR + "'") in _p32)
@@ -2834,6 +2834,45 @@ try:
           _ev32.get("scheme_conf") == "medium")
 except Exception as _e32:
     check("⑦ 运行时验证", False, repr(_e32))
+
+
+# === 33. 1.1.19：投喂二维码独立放大弹层 ===
+print("\n=== 33. 1.1.19 投喂二维码独立放大弹层 ===")
+_h33 = open(os.path.join(UI, "index.html"), encoding="utf-8").read()
+_j33 = open(os.path.join(UI, "app.js"), encoding="utf-8").read()
+_c33 = open(os.path.join(UI, "style.css"), encoding="utf-8").read()
+
+check("① 二维码移出关于卡片，改为独立灯箱 DOM",
+      'id="sponsorMask"' in _h33 and 'id="sponsorBox"' in _h33 and
+      'id="sponsorClose"' in _h33 and
+      _h33.index('id="aboutMask"') < _h33.index('id="sponsorMask"') and
+      'id="aboutSponsor"' not in _h33)
+check("② 点击投喂入口改为打开灯箱，不再展开卡片内区块",
+      "$('btnSponsor').onclick = openSponsor" in _j33 and
+      "function openSponsor()" in _j33 and "function closeSponsor()" in _j33 and
+      "aboutSponsor" not in _j33 and
+      "box.hidden = !box.hidden" not in _j33)
+check("③ 三种关闭方式齐备且 ESC 优先收灯箱",
+      "$('sponsorClose').onclick = closeSponsor" in _j33 and
+      "$('sponsorMask').onclick" in _j33 and
+      "sponsor-stage" in _j33 and
+      _j33.index("if ($('sponsorMask').classList.contains('on')) { closeSponsor(); return; }") <
+      _j33.index("if ($('aboutMask').classList.contains('on')) { closeAbout(); return; }"))
+check("④ 关闭关于页时顺手收灯箱、打开关于页时无残留",
+      "function closeAbout() {\n    closeSponsor();" in _j33 and
+      "function openAbout() {\n    closeSponsor();" in _j33)
+check("⑤ 图片放大到约 460px 且灯箱层叠高于关于弹窗",
+      ".sponsor-mask{position:fixed;inset:0;z-index:14000" in _c33 and
+      ".sponsor-mask.on{display:flex}" in _c33 and
+      "width:min(76vw,460px)" in _c33 and
+      "max-height:68vh" in _c33 and ".about-sponsor" not in _c33)
+check("⑥ 二维码仍随包分发，灯箱引用同一张图且无重复图注",
+      "images/sponsor.png" in _h33 and
+      _h33.count("images/sponsor.png") == 1 and
+      os.path.isfile(_img32) and os.path.getsize(_img32) > 10000 and
+      "有你的支持我就很开心了" not in _h33)
+check("⑦ 预览页内联替换仍覆盖灯箱图片",
+      'html.replace("images/sponsor.png", "data:image/png;base64," + b64)' in _p32)
 
 
 print("\n=== 结果：%d 项通过 / %d 项失败 ===" % (ok, len(fail)))
