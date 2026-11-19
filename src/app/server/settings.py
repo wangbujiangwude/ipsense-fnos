@@ -36,6 +36,13 @@ DEFAULTS = {
     # Web 协议推断：combined 日志不含 scheme，留空时只信同站来路，不硬猜。
     # 可手动填 https / http 覆盖全部 Web 事件，置信度标 manual。
     "web_scheme_override": "",
+    # 1.1.18：目标端口 / 协议判定。combined 日志不含端口与 scheme，
+    # 这里只放「用户可核对的证据」，绝不内置猜测值。
+    # web_port_map 格式：每行『日志路径=对外端口』，也支持分号分隔；
+    # Docker 容器日志写进映射即可补上反代端口。
+    "web_port_map": "",
+    "web_port_infer_referer": True,   # 同站 Referer 带端口时低置信度推断
+    "web_scheme_by_port": True,       # 有显式目标端口时按已知端口补 scheme
     "ignore_ips": ["127.0.0.1", "::1"],
     "keep_days": 30,
     # 地图（1.1.8：四家合规预设 + 自定义接口，KEY 按服务商分别保存）
@@ -86,7 +93,8 @@ BOOL_KEYS = ("source_local_auth", "source_local_web", "source_router_syslog",
              "source_auth_rotated",
              "lan_separate", "geo_verify_enabled", "geo_verify_auto",
              "geo_district_enabled", "geo_district_api_enabled",
-             "map_arc_animate", "summary_enabled")
+             "map_arc_animate", "summary_enabled",
+             "web_port_infer_referer", "web_scheme_by_port")
 INT_KEYS = ("syslog_port", "web_port", "ssh_port", "keep_days", "map_refresh",
             "map_heavy_refresh", "map_arc_limit", "auth_rotated_max",
             "geo_verify_days", "geo_verify_batch", "summary_interval",
@@ -95,8 +103,8 @@ FLOAT_KEYS = ("home_lat", "home_lng", "home_locate_at", "map_arc_bend")
 STR_KEYS = ("inbox_dir", "auth_log", "web_log", "kern_log", "knock_marker",
             "knock_app_dir",
             "map_key", "map_provider", "home_label", "chart_range",
-            "web_scheme_override", "home_ip", "home_geo", "home_proxy_ip",
-            "home_source", "summary_dir", "summary_range")
+            "web_scheme_override", "web_port_map", "home_ip", "home_geo",
+            "home_proxy_ip", "home_source", "summary_dir", "summary_range")
 DICT_KEYS = ("map_keys",)
 LIST_KEYS = ("map_custom",)
 

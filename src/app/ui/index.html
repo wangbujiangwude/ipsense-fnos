@@ -34,6 +34,7 @@
         <button data-r="30d">近30天</button>
       </div>
       <button class="btn ghost" id="btnRefresh" title="立即刷新">刷新</button>
+      <button class="btn ghost" id="btnAbout">关于</button>
       <button class="btn primary" id="btnSettings">设置</button>
     </div>
   </header>
@@ -203,7 +204,7 @@
 
   <footer>
     <span id="footMap">IP 动态感知 · 离线归属库 ip2region · 底图服务：—</span>
-    <span id="footInfo">数据源：本机日志 / fnOS 结构化审计 / SSH 轮转日志 / 路由器日志 / 端口敲门 · 归属：本地离线库 + 3 家在线源交叉校验 · 协议 / 来路 / 受访页 / 入口页来自 Nginx combined 日志 · 1.1.17 起 JS 异常、地图 SDK 加载失败与接口报错会自动记录；设置最底部可一键导出运行报错与运行日志诊断包，方便交给 AI 定位问题</span>
+    <span id="footInfo">数据源：本机日志 / fnOS 结构化审计 / SSH 轮转日志 / 路由器日志 / 端口敲门 · 归属：本地离线库 + 3 家在线源交叉校验 · 协议 / 来路 / 受访页 / 入口页来自 Nginx combined 日志 · 1.1.18 起筛选范围下次打开保持、目标端口按日志证据多级补录、在线校验自动复制 IP 并支持站内查询；设置最底部可一键导出运行报错与运行日志诊断包，方便交给 AI 定位问题</span>
   </footer>
 </div>
 
@@ -226,6 +227,50 @@
 </section>
 <aside class="drawer" id="settingsDrawer"><div class="drawer-head"><h2>设置</h2><button class="icon-btn" data-close>✕</button></div><div class="drawer-body" id="settingsBody"></div></aside>
 <aside class="drawer" id="detailDrawer"><div class="drawer-head"><h2 id="detailTitle">IP 来源画像</h2><button class="icon-btn" data-close>✕</button></div><div class="drawer-body" id="detailBody"></div></aside>
+<!-- 1.1.18：关于弹窗。以「关于 Cloudflare 快捷隧道」的排版为模板：
+     深色卡片 + 橙色小标题 + 使用说明 / 注意事项 + 底部分隔线与开发者信息。 -->
+<div class="about-mask" id="aboutMask">
+  <section class="about-card" id="aboutCard" aria-hidden="true">
+    <div class="about-head">
+      <h2>关于 IP 动态感知</h2>
+      <button class="link" id="aboutClose" type="button">关闭</button>
+    </div>
+    <div class="about-body">
+      <p class="about-lead">只观测、不封禁、不改防火墙、不自动处置：把散落的访问与扫描日志收成一张能点的地图。</p>
+
+      <h3>使用说明</h3>
+      <ul>
+        <li>首次打开请在「设置」填地图 KEY、选底图服务商，按需开启数据源。</li>
+        <li>点地图圆点或记录表任一行，查看该 IP 的完整来源画像。</li>
+        <li>出问题时到「设置」最底部一键导出运行报错与运行日志诊断包。</li>
+      </ul>
+
+      <h3>注意事项</h3>
+      <ol>
+        <li>地图 KEY 需自行申请，未配置时只显示不绘边界的坐标散点示意。</li>
+        <li>归属结果为离线库与在线源交叉校验，仅供参考，不作处置依据。</li>
+        <li>本应用不提供实时防护，请勿用于封 IP、改防火墙或自动处置。</li>
+        <li>提交 Issue 请用导出的脱敏文件，勿直接贴 config.json / events.db。</li>
+      </ol>
+
+      <div class="about-foot">
+        <div class="about-line"><span>开发者：</span><b>WangShao</b>
+          <button class="link" id="btnSponsor" type="button">【投喂入口】</button></div>
+        <div class="about-line"><span>企鹅群：</span><b>1132993836</b>
+          <button class="link" data-copy="1132993836" type="button">复制</button></div>
+        <div class="about-line"><span>Github：</span>
+          <a id="aboutGithub" href="https://github.com/wangbujiangwude/ipsense-fnos"
+             target="_blank" rel="noopener">wangbujiangwude/ipsense-fnos</a>
+          <span class="about-jump">（点击跳转到我的 GitHub 项目主页）</span></div>
+      </div>
+
+      <!-- 二维码图本身已带「有你的支持我就很开心了…」文案，不再另加图注，避免重复 -->
+      <div class="about-sponsor" id="aboutSponsor" hidden>
+        <img src="images/sponsor.png" alt="投喂二维码">
+      </div>
+    </div>
+  </section>
+</div>
 <div id="toast" class="toast"></div>
 
 <script>/*__JS__*/</script>

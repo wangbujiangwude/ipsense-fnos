@@ -24,6 +24,8 @@ EXTRA_COLUMNS = (
     ("sess_id", "TEXT DEFAULT ''"),
     # 1.1.15：区级归属（安徽省合肥市蜀山区）；离线库无区县时留空，不猜值。
     ("district", "TEXT DEFAULT ''"),
+    # 1.1.18：目标端口来源（log_tail / log_field / request_url / log_cfg / referer）
+    ("port_src", "TEXT DEFAULT ''"),
 )
 
 GEO_CACHE_COLUMNS = (
@@ -196,8 +198,8 @@ class Store(object):
     INSERT_SQL = ("INSERT OR IGNORE INTO events "
                   "(ts,day,source,ip,ipver,country,province,city,district,isp,scope,lat,lng,"
                   "port,service,action,verdict,path,raw,dedup,"
-                  "layer,proto,scheme_conf,method,status,referer,ua,sess_id) "
-                  "VALUES (" + ",".join(["?"] * 28) + ")")
+                  "layer,proto,scheme_conf,method,status,referer,ua,sess_id,port_src) "
+                  "VALUES (" + ",".join(["?"] * 29) + ")")
 
     def _row(self, ev):
         ts = float(ev.get("ts") or time.time())
@@ -215,6 +217,7 @@ class Store(object):
             ev.get("scheme_conf", "") or "", (ev.get("method") or "")[:16],
             int(ev.get("status") or 0), (ev.get("referer") or "")[:300],
             (ev.get("ua") or "")[:300], ev.get("sess_id", "") or "",
+            (ev.get("port_src") or "")[:24],
         )
 
     def insert(self, ev):
@@ -357,7 +360,7 @@ class Store(object):
 
     RECORD_COLS = ("id,ts,source,ip,country,province,city,district,isp,scope,lat,lng,port,"
                    "service,action,verdict,path,layer,proto,scheme_conf,method,status,"
-                   "referer,ua,sess_id")
+                   "referer,ua,sess_id,port_src")
 
     def records(self, page=1, size=20, scope="", verdict="", source="", q="",
                 rng="all", proto=""):
@@ -898,7 +901,7 @@ class Store(object):
                 "SELECT COALESCE(NULLIF(proto,''),'unknown') k, COUNT(*) n, "
                 "COUNT(DISTINCT ip) ips, "
                 "SUM(CASE WHEN scheme_conf='manual' THEN 1 ELSE 0 END) manual, "
-                "SUM(CASE WHEN scheme_conf='medium' THEN 1 ELSE 0 END) inferred "
+                "SUM(CASE WHEN scheme_conf IN ('medium','port') THEN 1 ELSE 0 END) inferred "
                 "FROM events WHERE ts>=? GROUP BY k ORDER BY n DESC", (start,)).fetchall()
             pxv = self.conn.execute(
                 "SELECT COALESCE(NULLIF(proto,''),'unknown') p, "

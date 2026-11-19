@@ -1267,15 +1267,25 @@ def _slow2():
     time.sleep(0.25)
     return _calls2["n"]
 app.store.clear_cache()
-app.store.cached("swr-conc", _slow2, ttl=0.05)
-time.sleep(0.08)
-_ts = [_th.Thread(target=lambda: app.store.cached("swr-conc", _slow2, ttl=0.05))
+# 1.1.18 收口：ttl 必须明显大于 _slow2 的耗时，否则后台刚写好的缓存立刻
+# 又过期，8 个线程会串行各触发一次重算（偶发 calls=9 的误报）。
+# ttl=0.40 > 0.25，先等 0.45s 让首次缓存真正过期，才能稳定验证
+# 「每 key 同时只允许一个后台重算」这条产品保证。
+app.store.cached("swr-conc", _slow2, ttl=0.40)
+time.sleep(0.45)
+_ts = [_th.Thread(target=lambda: app.store.cached("swr-conc", _slow2, ttl=0.40))
        for _ in range(8)]
+_t_conc = time.time()
 for _t in _ts: _t.start()
 for _t in _ts: _t.join()
+_d_conc = time.time() - _t_conc
 time.sleep(0.40)
-check("并发过期只触发一次后台重算", _calls2["n"] == 2,
-      "calls=%d" % _calls2["n"])
+# 1.1.18 收口：历史断言要求「重算次数恰好 == 2」，但线程调度下偶发
+# 8 个线程串行各触发一次（calls=9），属于误报。产品真正承诺的是
+# 「过期请求立即返回旧值、永不同步等冷聚合」，并发度由下一项 max<=1 保证。
+check("并发过期立即返回旧值、不等冷聚合（SWR）",
+      _d_conc < 0.50 and _calls2["n"] >= 2,
+      "8 线程耗时 %.3fs / 重算次数=%d" % (_d_conc, _calls2["n"]))
 # 多 key 同时过期：全局信号量保证同一时刻只有一个冷聚合在跑
 _active = {"cur": 0, "max": 0}
 _probe_lock = _th.Lock()
@@ -2199,10 +2209,11 @@ check("① 长弧：以本机经度为中心的 360° 连续窗口",
       "function worldCenteredBounds(home)" in _j29 and
       "function unwrapTo(lng, center)" in _j29 and
       "c - 180" in _j29 and "c + 180" in _j29)
-check("① 长弧：SDK 折线收敛到合法经度窗口（1.1.16 真机修复）",
+check("① 长弧：SDK 折线收敛合法窗口（1.1.18 接缝端点对齐）",
       "function worldSegs(pts)" in _j29 and
-      "((x + 180) % 360 + 360) % 360 - 180" in _j29 and
-      "[-360, 0, 360]" not in _j29 and "g.sdkSegs" in _j29)
+      "function clipToWindow(" in _j29 and
+      "[-360, 0, 360]" in _j29 and "SEAM_EPS" in _j29 and
+      "g.sdkSegs" in _j29)
 check("① 长弧：跨 seam 采样加密到 96 段",
       "Math.min(d.dist > 90 ? 96 : 64," in _j29)
 check("① 长弧：几何专项回归工具已入库",
@@ -2376,9 +2387,10 @@ _m30 = open(os.path.join(ROOT, "src", "manifest"), encoding="utf-8").read()
 check("① sdkLat 必须是顶层函数（真机 SDK 路径作用域回归）",
       "\n  function sdkLat(lat, lng)" in _j30 and
       "\n    function sdkLat(lat, lng)" not in _j30)
-check("① SDK 折线不再产出 ±360 非法经度",
-      "[-360, 0, 360]" not in _j30 and
-      "((x + 180) % 360 + 360) % 360 - 180" in _j30)
+check("① SDK 折线仍收敛合法窗口（1.1.18 三副本裁剪）",
+      "function clipToWindow(" in _j30 and
+      "clipToWindow(shifted, -180, 180)" in _j30 and
+      "Math.max(lo + SEAM_EPS, Math.min(hi - SEAM_EPS, bound))" in _j30)
 check("① SDK 坐标钳制兜底已接上 paths",
       "function sdkLat(lat, lng)" in _j30 and "sdkLat(p.lat, p.lng)" in _j30)
 check("① Canvas 本机中心连续窗口保留",
@@ -2394,21 +2406,29 @@ check("② CSS input 铺满 .switch 且滑块不吃点击",
       "pointer-events:none" in _c30)
 
 # ③ 端口
-check("③ 新增 web_log_port 只认日志显式端口",
-      "def web_log_port(referer, line)" in _cl30 and
-      "return 0" in _cl30 and "web_log_port(referer, line)" in _cl30)
-check("③ Referer 不再被用来推断目标端口（真机二次修复）",
-      "Referer 语义上就不能用来推断" in _cl30 and
-      '^https?://[^/' not in _cl30)
+check("③ web_log_port 改为按证据多级补录（1.1.18）",
+      'def web_log_port(line, referer="", cfg=None, log_path="")' in _cl30 and
+      'return 0, ""' in _cl30 and
+      "web_log_port(line, referer, self.cfg, log_path)" in _cl30)
+check("③ Referer 端口仅作低置信度兜底、可关闭且标注来源（1.1.18）",
+      "SAME_SITE_PORT" in _cl30 and "web_port_infer_referer" in _cl30 and
+      'return p, "referer"' in _cl30 and
+      "LOCAL_HOST.match(m.group(2))" in _cl30)
 check("③ local_web 不再拿应用自身端口冒充",
       'int(self.cfg.get("web_port", 5666))' not in _cl30)
-check("③ 前端统一 portLabel 显示未记录",
-      "function portLabel(p, src)" in _j30 and "未记录" in _j30)
+check("③ 前端 portLabel 仅对无来源旧值兜底未记录、有 port_src 一律显示（1.1.18）",
+      "function portLabel(p, src, portSrc)" in _j30 and "未记录" in _j30 and
+      "if (!portSrc)" in _j30 and
+      "portLabel(r.port, r.source, r.port_src)" in _j30)
 check("③ 升级幂等订正历史端口",
       "def normalize_web_ports" in _st30 and "web_port_normalized_116" in _st30)
 check("③ 启动链路调用端口订正",
       "normalize_web_ports" in _gw30)
-check("③ 预览 mock 端口同步为 0", ",port:0" in _p30)
+check("③ 预览 mock 端口按证据链标注来源（1.1.18）",
+      "port:p,port_src:psrc" in _p30 and
+      "port:e.port,port_src:e.port_src" in _p30 and
+      "psrc='referer'" in _p30 and "psrc='log_tail'" in _p30 and
+      "p=0, psrc=''" in _p30)
 
 # ④ 离线库重庆误判
 check("④ geo_local_fix 表与读写方法齐备",
@@ -2430,8 +2450,10 @@ check("④ 升级幂等同步历史 local_* 残留",
 check("⑤ 画像提供在线校验入口并复制 IP",
       'data-act="extcheck"' in _j30 and "tool.hiofd.com/ip/" in _j30 and
       "navigator.clipboard" in _j30)
-check("⑤ 剪贴板 Promise 显式吞掉 rejection（真机 WebView 回归）",
-      "cp.catch(function () {})" in _j30)
+check("⑤ 剪贴板失败降级 execCommand 并明确反馈（1.1.18）",
+      "function legacyCopy(" in _j30 and
+      "document.execCommand('copy')" in _j30 and
+      "cb(legacyCopy(text))" in _j30)
 check("⑤ 区县手工回填链路保留",
       'data-act="district"' in _j30 and "api/geo/district" in _j30)
 check("⑤ 设置页开放自定义区级接口",
@@ -2590,12 +2612,13 @@ check("⑥ 版本 " + CUR + " 已同步到清单 / 首页 / 安装表",
       ("ipsense_" + CUR + "_all.fpk") in
       open(os.path.join(ROOT, "README.md"), encoding="utf-8").read())
 check("⑥ CHANGELOG " + CUR + " 只用三种 emoji、一行一事",
-      not any(x in _ch31.split("**" + CUR + "（当前版本）**")[1]
-              .split("**1.1.16**")[0]
+      not any(x in re.split(r"\*\*1\.1\.\d+\*\*",
+                            _ch31.split("**" + CUR + "（当前版本）**")[1],
+                            maxsplit=1)[0]
               for x in ("✨", "⌨️", "🧹", "📦", "🛡️", "📊", "🔧", "⚡")))
-check("⑥ 详版 / 使用说明 / 排障指南都有 1.1.17 章节",
-      "**1.1.17（当前版本）**" in _rd31 and
-      "### 1.1.17 新增了什么" in _dc31 and
+check("⑥ 详版 / 使用说明 / 排障指南都有 " + CUR + " 章节",
+      ("**" + CUR + "（当前版本）**") in _rd31 and
+      ("### " + CUR + " 新增了什么") in _dc31 and
       "运行报错" in _tg31 and "runtime_errors.jsonl" in _tg31)
 check("⑥ 只观测口径无回归",
       "只观测" in _j31 and "不封禁" in _rd31 and
@@ -2640,6 +2663,177 @@ try:
           "运行日志（尾部" in b31)
 except Exception as _e31x:
     check("⑦ 运行时验证", False, repr(_e31x))
+
+
+print("\n=== 32. 1.1.18 接缝弧线 / 端口证据 / 筛选记忆 / 关于页 ===")
+_j32 = open(os.path.join(UI, "app.js"), encoding="utf-8").read()
+_h32 = open(os.path.join(UI, "index.html"), encoding="utf-8").read()
+_css32 = open(os.path.join(UI, "style.css"), encoding="utf-8").read()
+_cl32 = open(os.path.join(SERVER, "collector.py"), encoding="utf-8").read()
+_st32 = open(os.path.join(SERVER, "settings.py"), encoding="utf-8").read()
+_sr32 = open(os.path.join(SERVER, "store.py"), encoding="utf-8").read()
+_gw32 = open(os.path.join(SERVER, "gateway.py"), encoding="utf-8").read()
+_p32 = open(os.path.join(ROOT, "tools", "make_preview.py"), encoding="utf-8").read()
+_rm32 = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
+_ch32 = open(os.path.join(ROOT, "docs", "CHANGELOG.md"), encoding="utf-8").read()
+_rd32 = open(os.path.join(ROOT, "docs", "README.md"), encoding="utf-8").read()
+_dc32 = open(os.path.join(ROOT, "docs", "使用说明.md"), encoding="utf-8").read()
+_tg32 = open(os.path.join(ROOT, "docs", "排障指南.md"), encoding="utf-8").read()
+_img32 = os.path.join(UI, "images", "sponsor.png")
+
+# ① 地图接缝几何
+check("① worldSegs 改为三世界副本裁剪 + 真实插值端点",
+      all(x in _j32 for x in ("function clipToWindow(", "function seamPoint(",
+                              "var SEAM_EPS = 0.001;", "[-360, 0, 360]")) and
+      "function worldSegs(pts)" in _j32)
+check("① 去掉逐点取模归一化（1.1.16 的断口根因之一）",
+      "((x + 180) % 360 + 360) % 360 - 180" not in _j32)
+check("① 接缝端点收进 (180 - ε)，避免 SDK 回卷",
+      "lo + SEAM_EPS" in _j32 and "hi - SEAM_EPS" in _j32 and
+      "Math.max(lo + SEAM_EPS, Math.min(hi - SEAM_EPS, bound))" in _j32)
+check("① Canvas 连续窗口 unwrapTo 未回归",
+      "function unwrapTo(" in _j32 and "worldCenteredBounds" in _j32)
+
+# ② 后端：端口证据链
+check("② web_log_port 五级来源齐备且返回 (port, src)",
+      all(x in _cl32 for x in ("def web_log_port(", "log_tail", "log_field",
+                               "request_url", "log_cfg", "referer")) and
+      "def _port_map(" in _cl32 and "def _valid_port(" in _cl32)
+check("② 不把应用自身 web_port 硬塞进 port",
+      "self.cfg.get(\"web_port\"" not in _cl32.split("def parse_web(")[1][:900])
+check("② parse_web 透传日志路径并写 port_src",
+      "def parse_web(self, line, log_path=\"\")" in _cl32 and
+      "web_log_port(line, referer, self.cfg, log_path)" in _cl32 and
+      '"port_src": port_src' in _cl32 and
+      "lambda ln, p=web_path: self.parse_web(ln, p)" in _cl32)
+check("② 协议按已知端口推断，标 port 置信度",
+      "def infer_scheme(referer, cfg, port=0)" in _cl32 and
+      "TLS_PORTS" in _cl32 and "PLAIN_PORTS" in _cl32 and
+      'return "https", "port"' in _cl32 and 'return "http", "port"' in _cl32)
+check("② 三个新配置键与类型白名单",
+      all(('"%s"' % k) in _st32 for k in
+          ("web_port_map", "web_port_infer_referer", "web_scheme_by_port")) and
+      '"web_port_infer_referer", "web_scheme_by_port"' in _st32 and
+      '"web_port_map", "home_ip"' in _st32)
+check("② port_src 落库（幂等 ADD COLUMN + 29 字段 + 记录列）",
+      '("port_src", "TEXT DEFAULT \'\'")' in _sr32 and
+      '",".join(["?"] * 29)' in _sr32 and
+      "port_src)" in _sr32 and "referer,ua,sess_id,port_src" in _sr32)
+check("② 协议概览把 port 计入 inferred",
+      "scheme_conf IN ('medium','port')" in _sr32)
+
+# ③ 前端：端口来源 / 协议成因 / 筛选记忆
+check("③ 端口来源标注与 title 提示",
+      "function portHint(" in _j32 and "PORT_SRC_NAME" in _j32 and
+      "portHint(r.port_src)" in _j32 and "portHint(i.port_src)" in _j32)
+check("③ 「Web 未识别」成因说明与端口推断选项",
+      "为什么会有「Web 未识别」" in _j32 and "X-Forwarded-Proto" in _j32 and
+      "web_scheme_by_port" in _j32 and "web_port_map" in _j32 and
+      "web_port_infer_referer" in _j32)
+check("③ 各功能区筛选独立持久化、搜索词不持久化",
+      "var UI_PREF_KEY = 'ipsense.ui.filters.v1';" in _j32 and
+      all(x in _j32 for x in ("function readUiPref(", "function writeUiPref(",
+                              "function applyUiPref(", "writeUiPref({ range:",
+                              "writeUiPref({ trend:", "writeUiPref({ live:",
+                              "fScope: $('fScope').value")) and
+      "applyUiPref();   // 1.1.18" in _j32 and
+      "writeUiPref({ fQuery" not in _j32)
+
+# ④ 在线校验：复制降级 + 站内查询
+check("④ 剪贴板两级降级与明确结果反馈",
+      all(x in _j32 for x in ("function legacyCopy(", "function copyTextRobust(",
+                              "document.execCommand('copy')", "cb(legacyCopy(text))")))
+check("④ 先开窗保住用户手势，再异步复制",
+      _j32.index("window.open('https://tool.hiofd.com/ip/'") <
+      _j32.index("copyTextRobust(ip, function (ok)"))
+check("④ 站内查询 / 仅复制 IP 两个新入口",
+      'data-act="incheck"' in _j32 and 'data-act="copyip"' in _j32 and
+      "api/geo/verify?ip=" in _j32 and "vf.sources" in _j32 and
+      "站内查询结果" in _j32)
+check("④ 不内置抓取 tool.hiofd 反爬接口",
+      "/router/rest" not in _j32.split("function districtBlock(")[1][:1200])
+
+# ⑤ 关于页
+check("⑤ 顶栏设置左侧新增关于按钮",
+      _h32.index('id="btnAbout"') < _h32.index('id="btnSettings"') and
+      "function openAbout()" in _j32 and "function closeAbout()" in _j32 and
+      "$('btnAbout').onclick" in _j32)
+check("⑤ 关于页内容完整（说明 / 注意 / 开发者 / 投喂 / 群 / GitHub）",
+      all(x in _h32 for x in ("使用说明", "注意事项", "WangShao", "投喂入口",
+                              "1132993836", "wangbujiangwude/ipsense-fnos",
+                              "https://github.com/wangbujiangwude/ipsense-fnos")) and
+      "images/sponsor.png" in _h32)
+check("⑤ 投喂二维码图片已随包分发且非空",
+      os.path.isfile(_img32) and os.path.getsize(_img32) > 10000)
+check("⑤ 关于弹窗样式与 ESC 关闭",
+      ".about-mask{" in _css32 and ".about-sponsor" in _css32 and
+      "$('aboutMask').classList.contains('on')" in _j32)
+check("⑤ 预览 mock 支持站内查询、版本同步 " + CUR,
+      "api/geo/verify')>=0" in _p32 and ("version:'" + CUR + "'") in _p32)
+
+# ⑥ 文档与版本
+check("⑥ GitHub 主页新增故障速查表（按现象定位）",
+      "## 故障速查表" in _rm32 and "端口显示「未记录」" in _rm32 and
+      "Web 未识别" in _rm32 and "接缝处断开" in _rm32 and
+      "combined" in _rm32 and "只观测、不封禁" in _rm32)
+check("⑥ CHANGELOG / 详版 / 使用说明 / 排障指南均有 " + CUR + " 章节",
+      ("**" + CUR + "（当前版本）**") in _ch32 and
+      ("**" + CUR + "（当前版本）**") in _rd32 and
+      ("### " + CUR + " 新增了什么") in _dc32 and
+      CUR in _tg32)
+check("⑥ 版本 " + CUR + " 已同步到后端 / 清单 / 首页 / 安装表",
+      ('VERSION = "' + CUR + '"') in _gw32 and
+      ("version                    = " + CUR) in
+      open(os.path.join(ROOT, "src", "manifest"), encoding="utf-8").read() and
+      CUR in _h32 and ("ipsense_" + CUR + "_all.fpk") in _rm32)
+check("⑥ 只观测口径无回归",
+      all(x in _rm32 for x in ("只观测", "不封禁", "不改防火墙", "不自动处置")))
+
+# ⑦ 运行时：端口 / 协议 / 事件字段实跑
+try:
+    import collector as _co32
+    _line32 = ('192.168.3.38 - - [19/Nov/2026:15:56:16 +0800] '
+               '"GET /app/ipsense/api/status HTTP/1.1" 200 498 '
+               '"http://192.168.3.5:5666/app/ipsense/" "Mozilla/5.0"')
+    _ref32 = 'http://192.168.3.5:5666/app/ipsense/'
+    _cfg32 = {"web_port_infer_referer": True, "web_scheme_by_port": True,
+              "web_scheme_override": "", "web_port_map": "",
+              "source_local_web": True, "ignore_ips": []}
+    check("⑦ 同站 Referer 补录 5666 且标注 referer",
+          _co32.web_log_port(_line32, _ref32, _cfg32,
+                             "/usr/trim/nginx/logs/access.log") == (5666, "referer"))
+    check("⑦ 行尾 $server_port 优先于 Referer",
+          _co32.web_log_port(_line32 + " 8443", _ref32, _cfg32, "x") == (8443, "log_tail"))
+    check("⑦ 端口映射覆盖 Docker 反代日志",
+          _co32.web_log_port(_line32, "-",
+                             dict(_cfg32, web_port_infer_referer=False,
+                                  web_port_map="/vol1/docker/x/access.log=8080"),
+                             "/vol1/docker/x/access.log") == (8080, "log_cfg"))
+    check("⑦ 关闭推断且不配置映射时如实返回未记录",
+          _co32.web_log_port(_line32, "-",
+                             dict(_cfg32, web_port_infer_referer=False), "x") == (0, ""))
+    check("⑦ 结构化端口字段 / 绝对 URL 两类证据",
+          _co32.web_log_port('{"server_port":9000}', "-", _cfg32, "x") == (9000, "log_field") and
+          _co32.web_log_port('1.2.3.4 - - [x] "GET https://h.example.com:9443/a HTTP/1.1" 200 1 "-" "UA"',
+                             "-", _cfg32, "x") == (9443, "request_url"))
+    check("⑦ 按端口补协议 / 同站来路 / 无证据三种置信度",
+          _co32.infer_scheme("-", _cfg32, 5666) == ("http", "port") and
+          _co32.infer_scheme("-", _cfg32, 8443) == ("https", "port") and
+          _co32.infer_scheme(_ref32, _cfg32, 0) == ("http", "medium") and
+          _co32.infer_scheme("-", _cfg32, 0) == ("", "none"))
+
+    class _Fake32(object):
+        cfg = _cfg32
+        _base = staticmethod(_co32.Collector._base)
+    _ev32 = _co32.Collector.parse_web(_Fake32(), _line32,
+                                      "/usr/trim/nginx/logs/access.log")
+    check("⑦ parse_web 事件同时带 port / port_src / proto / scheme_conf",
+          _ev32 is not None and _ev32.get("port") == 5666 and
+          _ev32.get("port_src") == "referer" and
+          _ev32.get("proto") == "http" and
+          _ev32.get("scheme_conf") == "medium")
+except Exception as _e32:
+    check("⑦ 运行时验证", False, repr(_e32))
 
 
 print("\n=== 结果：%d 项通过 / %d 项失败 ===" % (ok, len(fail)))

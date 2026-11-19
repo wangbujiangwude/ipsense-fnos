@@ -235,7 +235,17 @@
     https: 'HTTPS', http: 'HTTP', web: 'Web 未识别', ssh: 'SSH',
     tcp: 'TCP', udp: 'UDP', icmp: 'ICMP', unknown: '未识别'
   };
-  var SCHEME_CONF = { manual: '设置页手动指定', medium: '同站来路推断', none: '未识别' };
+  var SCHEME_CONF = { manual: '设置页手动指定', medium: '同站来路推断',
+    port: '已知端口推断', none: '未识别' };
+  var PORT_SRC_NAME = {
+    log_tail: '目标端口：日志行尾 $server_port（显式记录，最可信）',
+    log_field: '目标端口：日志内结构化端口字段',
+    request_url: '目标端口：请求行绝对 URL 中写明',
+    log_cfg: '目标端口：设置页「Web 日志端口映射」按日志文件指定',
+    referer: '目标端口：由同站来路推断（低置信度，可在设置里关闭）',
+    '': '未记录：Nginx / Docker combined 日志不含目标端口，可在设置里配置端口映射'
+  };
+  function portHint(src) { return PORT_SRC_NAME[src || ''] || PORT_SRC_NAME['']; }
   function protoChip(p) {
     var k = String(p || 'unknown');
     if (!PROTO_NAME[k]) k = 'unknown';
@@ -527,7 +537,8 @@
       num(s.ips || 0) + ' 个来源 IP · ' + num(s.sessions || 0) + ' 个会话。';
     if (inferred) hint += ' <span class="conf">' + num(inferred) + ' 次由同站来路推断 scheme</span>；';
     if (manual) hint += ' <span class="conf">' + num(manual) + ' 次来自设置页手动指定</span>；';
-    if (unknown) hint += ' ' + num(unknown) + ' 次标「未识别」，可在设置里指定 http / https。';
+    if (unknown) hint += ' ' + num(unknown) + ' 次标「Web 未识别」：combined 日志不含 scheme，' +
+      '可在设置里指定 http / https 或按端口补协议（点卡片放大看完整成因）。';
     if (abnormal) hint += ' 其中 ' + num(abnormal) + ' 次被判为扫描或攻击。';
     $('protoHint').innerHTML = hint;
     renderMiniList('refList', (ov.referrers || []).slice(0, 8), { dim: 'referer' });
@@ -541,7 +552,7 @@
   // 条目详情走 /api/web/breakdown。关闭时按来源矩形反向动画收回，视觉上就是卡片缩回去。
   var ZOOM_DIM = {
     proto:   { title: '访问协议构成', tag: '协议', field: 'protocols',
-               sub: '按访问协议通道聚合，协议与行为判定是两个独立维度' },
+               sub: '按访问协议通道聚合，「Web 未识别」= combined 日志不含 scheme，点条目看成因' },
     referer: { title: '来路', tag: '来源', field: 'referrers',
                sub: '按 referer 归一化：直接输入 / 站内路径 / 外站域名' },
     page:    { title: '受访页', tag: '页面', field: 'pages',
@@ -677,6 +688,17 @@
       '<div><b>' + tm(d.first_ts) + '</b><span>首次</span></div>' +
       '<div><b>' + tm(d.last_ts) + '</b><span>末次</span></div></div>';
     if (d.note) h += '<p class="zoom-hint">' + esc(d.note) + '</p>';
+    if (dim === 'proto' && (name === 'web' || name === 'unknown')) {
+      h += '<div class="verify-box"><p class="hint" style="margin:0">' +
+        '<b>为什么会有「Web 未识别」：</b>Nginx / Docker 的 combined 日志只记录 ' +
+        '<code>GET /path HTTP/1.1</code>，不含 scheme（http / https），也没有 ' +
+        'X-Forwarded-Proto；只有带「同站内网来路」的请求能从 Referer 读出协议。' +
+        '其余请求（直接访问、API 轮询、健康检查、无 Referer、外部来路）没有可信信号，' +
+        '按「不伪造」原则统一归入此类，<b>这不是故障</b>。' +
+        '想让协议可识别：在设置里把整站协议指定为 http / https，或开启「按已知端口补协议」；' +
+        '日志里出现显式 $server_port 时会自动据此判定。' +
+        '另外，本明细的「来源 IP」是该 IP 的全部访问记录，不只统计这一协议下的次数。</p></div>';
+    }
     h += '<h3 class="zd-h">来源 IP 明细（' + ips.length +
       ' 个 · 点击任意一行查看该 IP 的完整来源画像）</h3>';
     h += ips.length ? '<div class="zoom-ips">' + ips.map(function (x) {
@@ -923,7 +945,7 @@
           '<td>' + esc(loc) + '</td>' +
           '<td><span class="badge ' + esc(r.scope) + '">' + esc(SCOPE_NAME[r.scope] || '未知') + '</span></td>' +
           '<td>' + protoChip(r.proto) + (r.status ? ' <small style="color:var(--dim)">' + r.status + '</small>' : '') + '</td>' +
-          '<td>' + portLabel(r.port, r.source) + '</td>' +
+          '<td title="' + esc(portHint(r.port_src)) + '">' + portLabel(r.port, r.source, r.port_src) + '</td>' +
           '<td><span class="badge ' + esc(r.verdict) + '">' + esc(VERDICT_NAME[r.verdict] || '记录') + '</span></td>' +
           '<td><span class="path" title="' + esc(r.action) + '">' + act + '</span></td></tr>';
       }).join('');
@@ -1436,24 +1458,65 @@
     if (cur.length > 1) segs.push(cur);
     return segs;
   }
+  // 1.1.18：SDK 合规底图的跨日期变更线处理。
+  // 1.1.16 的做法是「逐点取模归一化 + wrapSegs 切断」，真机会暴露两个缺陷：
+  //   ① 逐点取模把连续曲线在跨 180° 处折成两段，端点纬度用「前后两点平均」，
+  //      而不是曲线在接缝处的真实插值，两段端点对不齐；
+  //   ② 端点写死 ±180，部分 SDK 会把 180 归一化为 -180，段尾瞬间回卷到地图
+  //      另一端，视觉上就是「拼接处断了一截」，甚至整层折线不渲染。
+  // 现在对 -360 / 0 / +360 三个世界副本各裁剪一次到合法窗口，跨边界处按线性
+  // 插值补真实交点，端点收进 (180 - ε)：两段首尾严格对齐，且所有点都落在
+  // SDK 接受的 [-180,180] 内；SDK 重复世界副本时，接缝两侧自然首尾相接。
+  var SEAM_EPS = 0.001;
+  function seamPoint(a, b, bound, lo, hi) {
+    var d = b.lng - a.lng;
+    var f = Math.abs(d) < 1e-9 ? 0 : (bound - a.lng) / d;
+    f = Math.max(0, Math.min(1, f));
+    return { lat: a.lat + (b.lat - a.lat) * f,
+             lng: Math.max(lo + SEAM_EPS, Math.min(hi - SEAM_EPS, bound)) };
+  }
+  function clipToWindow(pts, lo, hi) {
+    var out = [], cur = [], i, a, b, inA, inB, edge, p1, p2;
+    function inside(x) { return x >= lo && x <= hi; }
+    for (i = 1; i < pts.length; i++) {
+      a = pts[i - 1]; b = pts[i];
+      inA = inside(a.lng); inB = inside(b.lng);
+      if (inA && !cur.length) cur.push({ lat: a.lat, lng: a.lng });
+      if (inA && inB) {
+        cur.push({ lat: b.lat, lng: b.lng });
+      } else if (inA && !inB) {
+        edge = b.lng > hi ? hi : lo;
+        cur.push(seamPoint(a, b, edge, lo, hi));
+        if (cur.length > 1) out.push(cur);
+        cur = [];
+      } else if (!inA && inB) {
+        edge = a.lng < lo ? lo : hi;
+        cur = [seamPoint(a, b, edge, lo, hi), { lat: b.lat, lng: b.lng }];
+      } else if ((a.lng < lo && b.lng > hi) || (a.lng > hi && b.lng < lo)) {
+        p1 = seamPoint(a, b, a.lng < lo ? lo : hi, lo, hi);
+        p2 = seamPoint(a, b, a.lng < lo ? hi : lo, lo, hi);
+        out.push([p1, p2]);
+      }
+    }
+    if (cur.length > 1) out.push(cur);
+    return out;
+  }
   function worldSegs(pts) {
-    // 1.1.16 真机回归修复：1.1.15 给跨 seam 长弧生成 -360 / +360 世界副本，
-    // 实测美国方向会产出 -540°~+540° 的经度（297 个点里 196 个越界）。
-    // 腾讯地图 GL 的 MultiPolyline / LatLng 只接受 [-180,180]，非法几何会让
-    // 整层折线不渲染，表现为两张地图「一条弧线都没有」；离线预览走 Canvas
-    // 降级所以没暴露。现在 SDK 侧统一收敛到合法窗口：跨日期变更线由
-    // wrapSegs 在 ±180 边界切成两段分别绘制；Canvas 侧另用 unwrapTo() 的
-    // 本机中心连续窗口让两段首尾相接，长弧视觉上仍然连续。
-    var norm = pts.map(function (p) {
-      var x = Number(p.lng) || 0;
-      x = ((x + 180) % 360 + 360) % 360 - 180;
-      return { lat: p.lat, lng: x };
-    });
     var out = [];
-    wrapSegs(norm, 0).forEach(function (seg) {
-      if (seg.length > 1) out.push(seg);
+    [-360, 0, 360].forEach(function (off) {
+      var shifted = pts.map(function (p) {
+        return { lat: p.lat, lng: (Number(p.lng) || 0) + off };
+      });
+      clipToWindow(shifted, -180, 180).forEach(function (seg) { out.push(seg); });
     });
-    return out.length ? out : [norm];
+    if (!out.length) {
+      return [pts.map(function (p) {
+        var x = ((Number(p.lng) || 0) + 180) % 360;
+        if (x < 0) x += 360;
+        return { lat: p.lat, lng: x - 180 + SEAM_EPS };
+      })];
+    }
+    return out;
   }
   function arcPaths(from, to, scope) {
     var g = arcControl(from, to, scope), full = [], i;
@@ -1597,7 +1660,7 @@
       ['底图资源请求', tileText],
       ['弧线绘制', S.arcDrawn + ' 条 · 合并 ' + S.arcMerged + ' 个 · 近距 ' +
         S.arcNear + ' 个 · 省略 ' + S.arcSkipped + ' 个'],
-      ['跨日期变更线', S.arcCross + ' 条 · 已生成连续世界副本，长弧不在 ±180° 处中断'],
+      ['跨日期变更线', S.arcCross + ' 条 · 接缝两端按插值对齐，端点收进 ±180° 内不再回卷'],
       ['地图重绘', S.redraws + ' 次 · 最近 ' + S.lastDrawMs.toFixed(1) + ' ms（数据未变时跳过）'],
       ['刷新间隔', '事件 ' + (Number(S.cfg.map_refresh) || 3) + ' s / 地图 ' +
         (Number(S.cfg.map_heavy_refresh) || 12) + ' s'],
@@ -1965,11 +2028,17 @@
   // 端口（web_port，默认 5666）填进 port，导致本机 Web 每条都显示 5666 ——
   // 那是软件自己的端口，不是被访问的端口。现在日志没写就显示「未记录」，
   // 历史值由后端升级时一次性订正为 0；这里再兜一层旧值兼容。
-  function portLabel(p, src) {
+  // 1.1.18：后端按证据链补录端口并带 port_src。只有当这条记录没有任何来源
+  // 标注（兼容 1.1.15 前漏网的历史脏数据）、且端口恰好等于应用自身监听端口时，
+  // 才兜底显示「未记录」；凡有明确来源（log_tail / log_cfg / referer 等）的端口
+  // 一律显示，哪怕它数值上正好是 5666 —— 那是证据读出来的，不是硬塞进去的。
+  function portLabel(p, src, portSrc) {
     var n = Number(p) || 0;
     if (n <= 0) return '未记录';
-    var own = Number((S.cfg || {}).web_port || 5666);
-    if (src === 'local_web' && n === own) return '未记录';
+    if (!portSrc) {
+      var own = Number((S.cfg || {}).web_port || 5666);
+      if (src === 'local_web' && n === own) return '未记录';
+    }
     return String(n);
   }
 
@@ -2011,26 +2080,63 @@
     h += districtBlock(v);
     return h;
   }
-  // 1.1.16：区县级归属补全入口。三家国际源、ip9 与本地离线库实测都拿不到区县，
-  // 所以无论该 IP 是否已经在线核验，都要能一键打开查询页并手工回填 ——
-  // 新 IP（尚未核验）恰恰最需要补区级时，反而不该没有入口。
-  // tool.hiofd.com/ip/ 的 /router/rest 带 k/t/x/r 反爬签名、免签名返回 444，
-  // 不是公开 API，因此只做「打开页面 + 复制 IP」，不做后台自动调用。
+  // 1.1.18：区县级归属补全入口。
+  // tool.hiofd.com 的查询接口带 k/t/x/r 反爬签名、免签名返回 444，不是公开 API，
+  // 因此不内置后台抓取。改为两条可用路径：
+  //   ① 「站内查询」直接调用本应用已有的多源在线核验，在画像里展示逐源结果；
+  //   ② 「在线校验」自动复制 IP 后打开查询页，人工核对再回填。
   function districtBlock(v) {
     v = v || {};
     return '<div class="verify-box" style="margin-top:10px">' +
       '<p class="hint" style="margin:0 0 8px">区县级归属：免费接口覆盖不全，自动补充通常为空。' +
-      '可先用「在线校验」到 tool.hiofd.com 查（自动复制 IP），把结果里的「区」填到下面保存；' +
-      '该站接口带反爬签名、不是公开 API，因此不做后台自动调用。' +
+      '可点「站内查询」直接在软件里用在线源核对，或点「在线校验」自动复制 IP 后到 ' +
+      'tool.hiofd.com 查，把结果里的「区」填到下面保存。' +
+      '该站接口带反爬签名、不是公开 API，本应用不内置自动抓取；' +
       '也可以在设置里填一个自己的区级接口自动补全。</p>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">' +
-      '<button class="profile-btn" data-act="extcheck">在线校验（打开查询页并复制 IP）</button></div>' +
+      '<button class="profile-btn" data-act="incheck">站内查询（在线源直接核对）</button>' +
+      '<button class="profile-btn" data-act="extcheck">在线校验（打开查询页并复制 IP）</button>' +
+      '<button class="profile-btn" data-act="copyip">仅复制 IP</button></div>' +
+      '<div id="inlineCheckResult" style="margin-bottom:8px"></div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
       '<input id="districtInput" type="text" maxlength="40" placeholder="例如：蜀山区" ' +
       'value="' + esc(v.district || '') + '" style="flex:1;min-width:160px;background:var(--panel-2);' +
       'border:1px solid var(--line);border-radius:8px;padding:7px 9px;color:inherit">' +
       '<button class="profile-btn" data-act="district">保存区级信息</button></div></div>';
   }
+  // ---- 1.1.18 · 剪贴板可靠复制 ----
+  // fnOS 内嵌 WebView / 页面未聚焦时 navigator.clipboard.writeText 会被拒绝，
+  // 1.1.16 只能静默吞掉 rejection，用户点了「在线校验」却什么都没复制。
+  // 这里补一层 execCommand 降级，并把成功 / 失败都明确 toast 出来。
+  function legacyCopy(text) {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { ta.setSelectionRange(0, String(text).length); } catch (e) {}
+      var ok = document.execCommand('copy');
+      if (ta.parentNode) ta.parentNode.removeChild(ta);
+      return !!ok;
+    } catch (e) { return false; }
+  }
+  function copyTextRobust(text, cb) {
+    var text = String(text || '');
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        var cp = navigator.clipboard.writeText(text);
+        if (cp && cp.then) {
+          cp.then(function () { if (cb) cb(true); },
+                  function () { if (cb) cb(legacyCopy(text)); });
+          return;
+        }
+      }
+    } catch (x) {}
+    if (cb) cb(legacyCopy(text));
+  }
+
   // 画像抽屉统一事件：IP 切换 / 返回整组 / 在线核验
   function bindDetailEvents(root, ip, groupHit) {
     if (!root) return;
@@ -2039,22 +2145,60 @@
       if (back && groupHit) { openGroupProfile(groupHit); return; }
       var el = e.target.closest('.ip-item[data-ip]');
       if (el) { openDetail(el.getAttribute('data-ip'), groupHit); return; }
-      // 1.1.16：在线校验入口。复制 IP 后打开第三方查询页，人工核对再回填。
+      // 1.1.18：window.open 必须在用户点击的同步调用栈里，否则会被浏览器拦截；
+      // 复制走 Promise 降级（clipboard API → execCommand），结果明确反馈。
       var ec = e.target.closest('[data-act="extcheck"]');
       if (ec) {
-        try {
-          if (navigator.clipboard && navigator.clipboard.writeText) {
-            // 1.1.16 真机回归三次修复：内嵌 WebView / 页面未聚焦时
-            // writeText() 会返回被拒绝的 Promise，try/catch 抓不到异步
-            // rejection，会污染成 unhandledrejection。显式吞掉即可，
-            // 功能上仍可手动复制，且查询页照常打开。
-            var cp = navigator.clipboard.writeText(ip);
-            if (cp && cp.catch) cp.catch(function () {});
-          }
-        } catch (x) { /* 内嵌 WebView 可能禁用剪贴板，仍可手动复制 */ }
         var w = window.open('https://tool.hiofd.com/ip/', '_blank', 'noopener');
-        toast(w ? ('已复制 ' + ip + '，粘贴到查询框；查到的「区」填到下面保存')
-                : ('查询页：tool.hiofd.com/ip/，手动输入 ' + ip + ' 后把「区」填到下面'));
+        copyTextRobust(ip, function (ok) {
+          toast(ok
+            ? ('已复制 ' + ip + '，粘贴到查询框；查到的「区」填到下面保存')
+            : ('复制未成功，请手动复制 IP：' + ip + '；查询页 ' +
+               (w ? '已打开' : 'tool.hiofd.com/ip/')));
+        });
+        return;
+      }
+      var ci = e.target.closest('[data-act="copyip"]');
+      if (ci) {
+        copyTextRobust(ip, function (ok) {
+          toast(ok ? ('已复制 ' + ip) : ('复制未成功，请手动复制：' + ip));
+        });
+        return;
+      }
+      // 1.1.18：站内查询 —— 复用后端已有的多源在线核验，不依赖第三方反爬页面。
+      var ic = e.target.closest('[data-act="incheck"]');
+      if (ic) {
+        var box = root.querySelector('#inlineCheckResult');
+        ic.disabled = true;
+        if (box) box.innerHTML = '<p class="hint" style="margin:0">正在用在线源核对 ' +
+          esc(ip) + '（约 2–8 秒）…</p>';
+        api('api/geo/verify?ip=' + encodeURIComponent(ip) + '&force=1').then(function (r) {
+          if (!r.ok) throw new Error(r.msg || '查询失败');
+          var vf = r.verification || {}, g = r.geo || {};
+          var srcs = vf.sources || [];
+          var lines = srcs.map(function (s) {
+            var loc = [s.country, s.province, s.city, s.district]
+              .filter(function (x) { return x && x !== '0'; }).join(' · ') || '—';
+            return '<div class="src-line"><span>' + esc(s.source || '在线源') + ' · ' +
+              esc(loc) + '</span><span>' + esc(s.isp || '') + '</span></div>';
+          }).join('');
+          var verdict = [g.country, g.province, g.city, g.district]
+            .filter(function (x) { return x && x !== '0'; }).join(' · ') || '—';
+          if (box) box.innerHTML = '<div class="about-box">' +
+            '<p class="hint" style="margin:0 0 6px"><b>站内查询结果</b> · 裁决：' +
+            esc(verdict) + ' · 在线源 ' + num(vf.online_sources || 0) + ' 家 · 置信度 ' +
+            esc(CONF_NAME[vf.confidence] || '—') + '</p>' +
+            (lines || '<p class="hint" style="margin:0">在线源未返回逐源明细，' +
+              '可点「在线校验」到网页人工核对。</p>') +
+            '<p class="hint" style="margin:6px 0 0">在线源多数不返回区县；' +
+            '把查到的「区」填进下面输入框后点「保存区级信息」即可固化。</p></div>';
+          toast('站内查询完成');
+          ic.disabled = false;
+        }).catch(function (er) {
+          if (box) box.innerHTML = '<p class="hint" style="margin:0;color:var(--amber)">' +
+            '查询失败：' + esc(er.message) + '。可点「在线校验」到网页人工核对。</p>';
+          ic.disabled = false;
+        });
         return;
       }
       // 1.1.15：手工补充区级信息，写 geo_cache 并回写历史事件
@@ -3390,8 +3534,18 @@
       sw('lan_separate', '内网设备单独归类', '局域网访问不计入公网排名与地图，但仍保留在记录表') +
       fld('auth_log', 'SSH 日志路径') + fld('web_log', 'Web 日志路径') + fld('kern_log', '内核日志路径') +
       fld('web_scheme_override', 'Web 协议覆盖（留空 / http / https）', 'text',
-          'Nginx combined 日志的 $request 不含 scheme。留空时只信同站来路推断，其余明确标「未识别」；' +
-          '若你的站点全部走 HTTPS，可填 https 手动指定，不会伪造无法确认的协议。') +
+          'Nginx combined 日志的 $request 不含 scheme，这正是「Web 未识别」的成因。' +
+          '留空时只信同站来路推断；若整站走 HTTPS 可填 https 手动指定，不会伪造无法确认的协议。') +
+      sw('web_scheme_by_port', '按已知端口补协议',
+         '目标端口命中 443 / 8443 等标 HTTPS、80 / 5666 等标 HTTP，标低置信度') +
+      fld('web_port_map', 'Web 日志端口映射（每行 路径=端口）', 'text',
+          'combined 日志不含目标端口。填 /usr/trim/nginx/logs/access.log=5666 即可补录；' +
+          'Docker 反代日志把容器日志路径写进同一份映射即可；留空不猜。') +
+      sw('web_port_infer_referer', '同站来路推断端口',
+         'Referer 明确写有同站端口时低置信度补录，端口列会标注来源') +
+      '<p class="hint">端口读取优先级：日志行尾 $server_port → 日志内结构化端口字段 → ' +
+      '请求行绝对 URL → 此处端口映射 → 同站来路推断（低置信度）。' +
+      '全部读不到才显示「未记录」，绝不把应用自身端口硬塞进去。</p>' +
       '<p class="hint">结构化审计 ' + (sources && sources.fnos_audit ? '已启用' : '已关闭') +
       ' · 轮转日志 ' + (sources && sources.auth_rotated ? '已启用' : '已关闭') +
       ' · 局域网设备 ' + num(sources && sources.lan ? sources.lan.count : 0) + ' 条</p>' +
@@ -3737,7 +3891,10 @@
         ['IP 地址', ip], ['归属地', loc || '未知'], ['范围', SCOPE_NAME[g.scope] || '未知'],
         ['坐标', (g.lat != null ? g.lat + ', ' + g.lng : '—')],
         ['累计访问', num(a.n) + ' 次'], ['首次 / 末次', tm(a.first_ts) + ' → ' + tm(a.last_ts)],
-        ['目标端口', portLabel(i.port, i.source)], ['来源通道', SRC_NAME[i.source] || i.source || '—'],
+        ['目标端口', portLabel(i.port, i.source) +
+          '<small style="color:var(--dim);display:block;font-size:11px">' +
+          esc(portHint(i.port_src)) + '</small>'],
+        ['来源通道', SRC_NAME[i.source] || i.source || '—'],
         ['最近判定', VERDICT_NAME[i.verdict] || i.verdict || '—'],
         ['访问协议', (PROTO_NAME[i.proto] || i.proto || '未识别') +
           (i.scheme_conf ? ' · ' + (SCHEME_CONF[i.scheme_conf] || i.scheme_conf) : '')],
@@ -3812,6 +3969,62 @@
   }
 
   // ---- 事件绑定 ----
+  // ---- 1.1.18 · 各功能区筛选设定持久化 ----
+  // 用户要求「实时访问事件选境内、IP 来源记录选境外，下次打开保持」。
+  // 各功能区用独立字段存同一份 JSON；搜索词 fQuery 不持久化（避免下次
+  // 打开还带着上一次的临时搜索条件）。localStorage 不可用时静默降级。
+  var UI_PREF_KEY = 'ipsense.ui.filters.v1';
+  function readUiPref() {
+    try { return JSON.parse(localStorage.getItem(UI_PREF_KEY) || '{}') || {}; }
+    catch (e) { return {}; }
+  }
+  function writeUiPref(patch) {
+    try {
+      var p = readUiPref();
+      Object.keys(patch).forEach(function (k) { p[k] = patch[k]; });
+      localStorage.setItem(UI_PREF_KEY, JSON.stringify(p));
+    } catch (e) {}
+  }
+  function applyUiPref() {
+    var p = readUiPref();
+    ['liveScope', 'fScope', 'fVerdict', 'fProto', 'fSource'].forEach(function (id) {
+      var v = p[id === 'liveScope' ? 'live' : id];
+      if (!v) return;
+      var el = $(id);
+      if (!el || !el.options) return;
+      var hit = false;
+      Array.prototype.forEach.call(el.options, function (o) { if (o.value === v) hit = true; });
+      if (hit) el.value = v;
+    });
+    S.liveScope = $('liveScope').value || '';
+    if (p.range) {
+      S.range = p.range;
+      Array.prototype.forEach.call($('rangeSeg').querySelectorAll('button[data-r]'), function (b) {
+        if (b.getAttribute('data-r') === S.range) b.classList.add('on');
+        else b.classList.remove('on');
+      });
+    }
+    if (p.trend) {
+      S.trendKey = p.trend;
+      Array.prototype.forEach.call($('trendLegend').querySelectorAll('button[data-k]'), function (b) {
+        if (b.getAttribute('data-k') === S.trendKey) b.classList.add('on');
+        else b.classList.remove('on');
+      });
+    }
+  }
+
+  // ---- 1.1.18 · 关于弹窗 ----
+  function openAbout() {
+    $('aboutMask').classList.add('on');
+    $('aboutCard').setAttribute('aria-hidden', 'false');
+    setMapScroll(false);
+  }
+  function closeAbout() {
+    $('aboutMask').classList.remove('on');
+    $('aboutCard').setAttribute('aria-hidden', 'true');
+    if (!drawerOpen() && !S.zoomOn) setMapScroll(true);
+  }
+
   function bind() {
     bindCanvasPicks();
     // 1.0.12：设置 / 画像抽屉与放大面板都是模态，滚轮不能穿透去缩放底下的地图，
@@ -3890,6 +4103,7 @@
     $('zoomMask').onclick = function () { closeCardZoom(false); };
     document.addEventListener('keydown', function (e) {
       if (e.key !== 'Escape') return;
+      if ($('aboutMask').classList.contains('on')) { closeAbout(); return; }
       if (S.zoomOn) { closeCardZoom(false); return; }
       if ($('mask').classList.contains('on')) closeDrawers();
     });
@@ -3923,13 +4137,13 @@
       var b = e.target.closest('button[data-r]'); if (!b) return;
       S.range = b.getAttribute('data-r'); S.page = 1;
       Array.prototype.forEach.call(this.querySelectorAll('button'), function (x) { x.classList.remove('on'); });
-      b.classList.add('on'); loadAll();
+      b.classList.add('on'); writeUiPref({ range: S.range }); loadAll();
     };
     $('trendLegend').onclick = function (e) {
       var b = e.target.closest('button[data-k]'); if (!b) return;
       S.trendKey = b.getAttribute('data-k');
       Array.prototype.forEach.call(this.querySelectorAll('button'), function (x) { x.classList.remove('on'); });
-      b.classList.add('on');
+      b.classList.add('on'); writeUiPref({ trend: S.trendKey });
       api('api/trend?rng=' + S.range).then(function (r) { renderTrend(r.data); });
     };
     $('btnRefresh').onclick = function () {
@@ -3939,6 +4153,23 @@
     $('btnSettings').onclick = function () {
       api('api/sources').then(function (r) { renderSettings(r.data); openDrawer('settingsDrawer'); });
     };
+    $('btnAbout').onclick = openAbout;
+    $('aboutClose').onclick = closeAbout;
+    $('aboutMask').onclick = function (e) { if (e.target === this) closeAbout(); };
+    $('btnSponsor').onclick = function () {
+      var box = $('aboutSponsor');
+      box.hidden = !box.hidden;
+      if (!box.hidden && box.scrollIntoView) {
+        box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }
+    };
+    Array.prototype.forEach.call(document.querySelectorAll('[data-copy]'), function (b) {
+      b.onclick = function () {
+        copyTextRobust(b.getAttribute('data-copy'), function (ok) {
+          toast(ok ? '已复制' : '复制未成功，请手动选取');
+        });
+      };
+    });
     $('bannerAction').onclick = function () {
       if (this.getAttribute('data-act') === 'retry') {
         rebuildMap();
@@ -3950,11 +4181,17 @@
     });
     $('mask').onclick = closeDrawers;
     ['fScope', 'fVerdict', 'fProto', 'fSource'].forEach(function (id) {
-      $(id).onchange = function () { S.page = 1; loadHeavy(); };
+      $(id).onchange = function () {
+        S.page = 1;
+        writeUiPref({ fScope: $('fScope').value, fVerdict: $('fVerdict').value,
+                      fProto: $('fProto').value, fSource: $('fSource').value });
+        loadHeavy();
+      };
     });
     // 1.1.15：实时访问事件监控范围（全部 / 境内 / 境外 / 内网 / 局域网设备）
     $('liveScope').onchange = function () {
       S.liveScope = this.value;
+      writeUiPref({ live: S.liveScope });
       renderLive(S.live);
     };
     var qt = null;
@@ -3991,6 +4228,7 @@
         '<br>境外 ' + num(p.overseas) + ' · 扫描 ' + num(p.scan);
     });
     $('trendSvg').addEventListener('mouseleave', function () { $('chartTip').style.display = 'none'; });
+    applyUiPref();   // 1.1.18：恢复上次的筛选设定（必须在 loadAll 之前）
   }
 
   // ---- 启动 ----

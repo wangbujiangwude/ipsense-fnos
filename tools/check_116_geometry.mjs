@@ -26,8 +26,10 @@ function grab(name) {
   return src.slice(i, k);
 }
 
-const names = ['geoDist', 'arcControl', 'bezierAt', 'wrapSegs', 'worldSegs', 'arcPaths'];
-const F = new Function('var S={arcBend:0.12};\n' +
+const names = ['geoDist', 'arcControl', 'bezierAt', 'wrapSegs',
+  // 1.1.18：三副本裁剪依赖
+  'seamPoint', 'clipToWindow', 'worldSegs', 'arcPaths'];
+const F = new Function('var S={arcBend:0.12};var SEAM_EPS=0.001;\n' +
   names.map(grab).join('\n') + '\nreturn {arcPaths,worldSegs,wrapSegs};')();
 const home = { lat: 31.8639, lng: 117.2808 };
 const cases = [
@@ -65,17 +67,23 @@ console.log('=== 2. 跨日期变更线分段与连续窗口 ===');
 const cross = F.arcPaths({ lat: 39.83, lng: -98.58 }, home, 'overseas');
 check('美国长弧被切成 2 段（±180 边界）', (cross.sdkSegs || []).length === 2,
   String((cross.sdkSegs || []).length));
-check('两段端点贴着 ±180 边界', (() => {
+check('1.1.18 接缝两端点纬度一致、收进 180-ε 不回卷', (() => {
   const a = (cross.sdkSegs || [])[0] || [], b = (cross.sdkSegs || [])[1] || [];
+  // 1.1.18 三副本裁剪后，接缝对齐发生在「第一段末点」与「第二段首点」之间，
+  // 不是两段各自的 first：a 末点 -179.999、b 首点 179.999，纬度须完全一致。
+  const p = a[a.length - 1] || {}, q = b[0] || {};
   return a.length > 1 && b.length > 1 &&
-         Math.abs(Math.abs((a[a.length - 1] || {}).lng || 0) - 180) < 0.001 &&
-         Math.abs(Math.abs((b[0] || {}).lng || 0) - 180) < 0.001;
+         Math.abs(Math.abs((p.lng || 0)) - 180) <= 0.0011 &&
+         Math.abs(Math.abs((q.lng || 0)) - 180) <= 0.0011 &&
+         Math.abs((p.lat || 0) - (q.lat || 0)) < 1e-6;
 })(), '');
 check('Canvas 本机中心连续窗口仍在源码里',
   /function worldCenteredBounds\(home\)/.test(src) && /c - 180/.test(src));
 check('SDK 坐标钳制兜底 sdkLat 已接上 paths',
   /function sdkLat\(lat, lng\)/.test(src) && /sdkLat\(p\.lat, p\.lng\)/.test(src));
-check('源码里已无 [-360, 0, 360] 副本数组', !src.includes('[-360, 0, 360]'));
+check('1.1.18 三副本裁剪，输出严格收敛到合法窗口',
+  src.includes('[-360, 0, 360]') &&
+  /clipToWindow\(shifted, -180, 180\)/.test(src) && /SEAM_EPS/.test(src));
 check('sdkLat 定义在 IIFE 顶层（createTMaps 内嵌会抛 ReferenceError）',
   /^  function sdkLat\(lat, lng\)/m.test(src) &&
   !/^    function sdkLat\(lat, lng\)/m.test(src));

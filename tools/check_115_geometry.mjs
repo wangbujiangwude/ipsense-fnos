@@ -9,7 +9,9 @@ const SRC = fs.readFileSync(path.join(ROOT, 'src/app/ui/app.js'), 'utf8');
 
 const NAMES = [
   'proj', 'worldCenteredBounds', 'unwrapTo',
-  'geoDist', 'arcControl', 'bezierAt', 'wrapSegs', 'worldSegs', 'arcPaths',
+  'geoDist', 'arcControl', 'bezierAt', 'wrapSegs',
+  // 1.1.18：worldSegs 改为三副本裁剪，依赖这两个函数与 SEAM_EPS
+  'seamPoint', 'clipToWindow', 'worldSegs', 'arcPaths',
   'mapSdkUrl'
 ];
 
@@ -26,6 +28,7 @@ function extract(name) {
 const PRELUDE = `
 var WORLD_BOUNDS = { latMin: -58, latMax: 78, lngMin: -180, lngMax: 180 };
 var S = { arcBend: 0.12 };
+var SEAM_EPS = 0.001;
 `;
 const code = PRELUDE + NAMES.map(extract).join('\n') +
   '\nreturn { ' + NAMES.join(', ') + ' };';

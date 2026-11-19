@@ -82,7 +82,18 @@ FPK
 
 ### 功能演进
 
-**1.1.17（当前版本）**
+**1.1.18（当前版本）**
+
+- 🆕 **「关于」页**：顶栏「设置」左侧新增「关于」，仿飞牛生态关于弹窗排版，写清使用说明、注意事项、开发者 `WangShao`、【投喂入口】（点开显示二维码）、企鹅群 `1132993836` 与可点击跳转的 GitHub 项目主页。
+- 🆕 **在线校验真的能复制了**：`1.1.16` 在 fnOS 内嵌 WebView 里 `navigator.clipboard.writeText` 被拒绝且静默吞掉，用户点了没反应。`1.1.18` 先同步 `window.open`（保持用户手势不被拦截），再用 `clipboard API → document.execCommand('copy')` 两级降级，成功 / 失败都明确 toast；另加「仅复制 IP」按钮。
+- 🆕 **站内查询**：`tool.hiofd.com` 的 `/router/rest` 带 `k/t/x/r` 反爬签名、免签名返回 444，不是公开 API，不做后台抓取。改为复用本应用已有的多源在线核验，在画像里直接列出 `ip-api.com / ip.sb / ipinfo.io` 逐源结果与裁决置信度，用户不跳外部站也能核对。
+- 🆕 **筛选范围记忆**：实时访问事件、IP 来源记录（范围 / 判定 / 协议 / 来源）、时间范围、趋势图例各自存进 `localStorage` 的 `ipsense.ui.filters.v1`，下次打开保持上次设定；搜索词不持久化，避免带着旧条件回来。
+- 🐛 **地图接缝断口**：`1.1.16` 的 `worldSegs()` 逐点取模归一化，把连续曲线在 ±180° 折成两段，端点纬度用「前后两点平均」而非曲线真实插值，且端点写死 ±180 会被部分 SDK 回卷到 -180，表现为「拼接处断了一截」。现在对 `-360 / 0 / +360` 三个世界副本各裁剪一次到合法窗口，跨边界用线性插值补真实交点，端点收进 `180 - 0.001`，两段首尾严格对齐，所有点都落在 SDK 接受的 `[-180,180]` 内。
+- 🐛 **端口恒为「未记录」**：根因是 Nginx / Docker `combined` 日志根本不含目标端口。`1.1.18` 的 `web_log_port()` 改为按证据多级读取，返回 `(port, source)`：① 行尾 `$server_port` ② 行内 `server_port=` / `"port":` 等结构化字段 ③ 请求行绝对 URL 的端口 ④ 设置页「Web 日志端口映射」按日志文件指定 ⑤ 同站 Referer 里写明的端口（低置信度，可关）。`port_src` 落库，端口列悬停显示来源；**绝不把应用自身 `web_port` 硬塞进去**。
+- 🧩 **「Web 未识别」说明**：协议卡片放大后新增成因说明——`combined` 日志只有 `GET /path HTTP/1.1`，不含 scheme 与 `X-Forwarded-Proto`，只有「同站内网来路」能推断；其余按「不伪造」原则归入此类，不是故障。新增 `web_scheme_by_port` 开关，已有显式目标端口时按 443/8443 → HTTPS、80/5666 → HTTP 补协议并标低置信度。
+- 🧩 **GitHub 主页故障速查表**：按现象列 15 条常见问题与解决办法，覆盖地图 KEY、SDK 加载、接缝弧线、端口未记录、Docker 反代、Web 未识别、归属误判、区级为空、筛选重置、按钮点不动、数据不更新、敲门无数据、汇总日志、fnOS 版本兼容与诊断导出。
+
+**1.1.17**
 
 - 🆕 **运行时报错终于能导出了**：此前诊断包只有服务端日志（主日志 / `cmd.log` / `app.log`），浏览器侧的 `window.onerror`、`unhandledrejection`、`<script>` 加载失败、接口 4xx/5xx 与超时只显示在页面上，一关页面就没了。用户反馈「地图 SDK 没有正常加载」时，交出来的日志里完全没有这条线索。1.1.17 在前端加全局采集器（捕获阶段监听 `error`，才能拿到 script/link 的加载失败），内存环形缓冲 200 条、同因 5 秒内合并（接口类 60 秒），每批最多 20 条 POST `/api/runtime/errors`；失败静默退避，绝不因上报本身再抛异常。
 - 🆕 **地图 SDK 专项**：`setMapState('error')` 会把服务商、SDK 域名、原始提示一并落盘；资源加载失败另记一条 `resource`，导出文本里单独列「[2] 地图 SDK 专项」，KEY 无效 / 域名被拦 / 白名单不符一眼可分。
@@ -501,7 +512,7 @@ $PY tools/make_icon.py                 # 生成图标
 $PY tools/selftest.py                  # 离线自检
 node --check src/app/ui/app.js         # 前端语法
 PY=$PY bash tools/build_fpk.sh         # 打包（LF / 可执行位 / py_compile / checksum）
-$PY tools/deploy.py --fpk build/ipsense_1.1.17_all.fpk
+$PY tools/deploy.py --fpk build/ipsense_1.1.18_all.fpk
 ```
 
 `build_fpk.sh` 用 `tarfile` 显式写权限位（`cmd/*` = 0755），避免从 Windows 打包时丢可执行位；
@@ -515,9 +526,9 @@ ipsense 是纯 Python 标准库 + JS/CSS + `ip2region` 数据文件，没有任�
 
 | 安装包 | `platform` | 适用 |
 |---|---|---|
-| `ipsense_1.1.17_all.fpk` | `all` | 通用，x86 与 ARM 都能装，**推荐** |
-| `ipsense_1.1.17_x86.fpk` | `x86` | x86_64 设备，或按架构分发的应用源 |
-| `ipsense_1.1.17_arm.fpk` | `arm` | aarch64 设备，或按架构分发的应用源 |
+| `ipsense_1.1.18_all.fpk` | `all` | 通用，x86 与 ARM 都能装，**推荐** |
+| `ipsense_1.1.18_x86.fpk` | `x86` | x86_64 设备，或按架构分发的应用源 |
+| `ipsense_1.1.18_arm.fpk` | `arm` | aarch64 设备，或按架构分发的应用源 |
 
 `build_fpk.sh` 打完通用包后会自动调用 `tools/build_multiarch.py` 派生另两个包（`SKIP_MULTIARCH=1` 可跳过）。派生脚本不修改 `src/manifest`、不改动 `all` 包，且逐成员校验「除 `platform` 行外字节与权限完全一致」。
 

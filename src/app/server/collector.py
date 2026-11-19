@@ -25,29 +25,90 @@ from store import Store
 from geoip import is_private
 
 
-def web_log_port(referer, line):
-    """1.1.16：只从日志里显式的 $server_port 读取目标端口；读不到返回 0。
+# ---------- 1.1.18 · 目标端口 / 协议推断 ----------
+# 已知端口 → scheme 映射只用于「有显式目标端口」时补协议，标注 conf=port，
+# 不把无法确认的请求硬猜成 http/https。
+TLS_PORTS = frozenset((443, 8443, 9443, 10443, 5667, 8448))
+PLAIN_PORTS = frozenset((80, 8080, 8000, 8888, 5666, 5000, 3000))
+PORT_TAIL = re.compile(r'"\s+(\d{2,5})\s*$')
+PORT_FIELD = re.compile(
+    r'(?i)["\']?(?:server_port|dst_port|target_port|serverPort)["\']?\s*[:=]\s*"?(\d{2,5})"?'
+    r'|["\']port["\']\s*:\s*"?(\d{2,5})"?')
+ABS_URL_PORT = re.compile(
+    r'"(?:GET|POST|HEAD|PUT|DELETE|OPTIONS|PATCH)\s+https?://[^/\s"\']+:(\d{2,5})(?:[/\s"])',
+    re.I)
+SAME_SITE_PORT = re.compile(r"^(https?)://([^/:]+):(\d{2,5})(?:/|$)", re.I)
 
-    Nginx combined 标准格式根本不含目标端口。1.1.15 之前把应用自身监听端口
-    web_port（默认 5666）填进 port，导致本机 Web 的每一条记录都显示 5666。
 
-    1.1.16 真机回归二次修复：初版还允许从 Referer 里取端口，但真机 access.log
-    的 Referer 是 http://<host>:5666/app/ipsense/ —— 那是用户浏览器访问 fnOS
-    桌面时「上一个页面」的端口，不是当前请求的目标端口。同站来源会让每条
-    本机 Web 事件又全变成 5666，正是用户反馈的「都是 5666 端口，不准确」。
-    Referer 语义上就不能用来推断当前请求的目标端口，因此彻底不再解析它。
+def _valid_port(v):
+    try:
+        p = int(str(v).strip())
+        return p if 0 < p < 65536 else 0
+    except (TypeError, ValueError):
+        return 0
 
-    唯一可信来源是自定义 log_format 追加在行尾的 $server_port：
-        ... "UA" 8443
-    没有就返回 0，前端显示「未记录」，绝不猜测。
-    referer 参数保留仅为兼容既有调用点，不参与计算。
+
+def _port_map(cfg):
+    """解析设置页「Web 日志端口映射」：每行『日志路径=端口』，也支持分号分隔。"""
+    out = {}
+    for item in re.split(r"[;\n]+", str((cfg or {}).get("web_port_map", "") or "")):
+        item = item.strip()
+        if "=" not in item:
+            continue
+        path, _, val = item.rpartition("=")
+        p = _valid_port(val)
+        if path.strip() and p:
+            out[path.strip()] = p
+    return out
+
+
+def web_log_port(line, referer="", cfg=None, log_path=""):
+    """1.1.18：多级读取「目标端口」，返回 (port, source)。
+
+    Nginx combined 标准格式根本不含目标端口，这是「端口未记录」的根本原因；
+    Docker 容器 / fnOS 反代的访问日志同样是 combined，所以也不会有端口。
+
+    1.1.16 曾把应用自身 web_port 直接填进 port（每条都是 5666），又无条件
+    从 Referer 取端口且不标来源，两次都被真机回归否定。1.1.18 改为
+    「有证据才填、并明确标注来源」，优先级从高到低：
+
+      1. log_tail    日志行尾自定义 log_format 追加的 $server_port（最可信）
+      2. log_field   行内结构化端口字段 server_port= / "port": 等
+      3. request_url $request 为绝对 URL 时自带的端口
+      4. log_cfg     设置页「Web 日志端口映射」按日志文件指定的监听端口
+      5. referer     同站来路里写明的端口（低置信度推断，可在设置里关闭）
+
+    绝不把应用自身监听端口硬塞进去；读不到就 (0, "")，前端显示「未记录」。
     """
-    m = re.search(r'"\s+(\d{2,5})\s*$', (line or "").rstrip())
+    cfg = cfg or {}
+    s = (line or "").rstrip()
+    m = PORT_TAIL.search(s)
     if m:
-        p = int(m.group(1))
-        if 0 < p < 65536:
-            return p
-    return 0
+        p = _valid_port(m.group(1))
+        if p:
+            return p, "log_tail"
+    m = PORT_FIELD.search(s)
+    if m:
+        p = _valid_port(m.group(1) or m.group(2))
+        if p:
+            return p, "log_field"
+    m = ABS_URL_PORT.search(s)
+    if m:
+        p = _valid_port(m.group(1))
+        if p:
+            return p, "request_url"
+    if log_path:
+        base = os.path.basename(log_path)
+        for k, v in _port_map(cfg).items():
+            if k == log_path or os.path.basename(k) == base:
+                return v, "log_cfg"
+    if cfg.get("web_port_infer_referer", True):
+        m = SAME_SITE_PORT.match((referer or "").strip())
+        if m and LOCAL_HOST.match(m.group(2)):
+            p = _valid_port(m.group(3))
+            if p:
+                return p, "referer"
+    return 0, ""
 
 ISO_TS = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z))")
 NGINX_TS = re.compile(r"\[([^\]]+)\]")
@@ -174,14 +235,16 @@ def session_id(ip, ua, ts):
     return hashlib.md5(raw.encode("utf-8", "replace")).hexdigest()[:16]
 
 
-def infer_scheme(referer, cfg):
+def infer_scheme(referer, cfg, port=0):
     """推断 Web 请求的 scheme，返回 (scheme, confidence)。
 
     combined 日志的 $request 只含 HTTP/1.1，不含 scheme，也拿不到 X-Forwarded-Proto。
-    延续 1.0.8「标置信度、不伪造」的原则：
-      - 设置页手动覆盖 → manual，最高优先级；
-      - 同站来路（内网 / localhost）带 scheme → medium，注明由同站来路推断；
-      - 外部站点 referer / 无 referer → 一律不猜，返回空 + none。
+    这就是「Web 未识别」的成因：没有可信信号就不硬猜。1.1.18 增加一条证据来源，
+    延续「标置信度、不伪造」原则，优先级从高到低：
+      - 设置页手动覆盖 → manual；
+      - 同站来路（内网 / localhost）带 scheme → medium；
+      - 1.1.18：已读到目标端口且命中已知 TLS / 明文端口 → port（低置信度）；
+      - 外部站点 referer / 无 referer / 无端口 → 不猜，返回空 + none。
     """
     override = str(cfg.get("web_scheme_override", "") or "").strip().lower()
     if override in ("https", "http"):
@@ -191,6 +254,11 @@ def infer_scheme(referer, cfg):
         m = re.match(r"^(https?)://([^/:]+)", r, re.I)
         if m and LOCAL_HOST.match(m.group(2)):
             return m.group(1).lower(), "medium"
+    if cfg.get("web_scheme_by_port", True) and port:
+        if port in TLS_PORTS:
+            return "https", "port"
+        if port in PLAIN_PORTS:
+            return "http", "port"
     return "", "none"
 
 
@@ -387,7 +455,8 @@ class Collector(object):
                 "service": service, "action": action, "verdict": verdict,
                 "path": path, "raw": raw[:600],
                 "layer": "", "proto": "", "scheme_conf": "",
-                "method": "", "status": 0, "referer": "", "ua": "", "sess_id": ""}
+                "method": "", "status": 0, "referer": "", "ua": "", "sess_id": "",
+                "port_src": ""}
 
     @staticmethod
     def _tag(ev, layer, proto, scheme_conf=""):
@@ -471,7 +540,7 @@ class Collector(object):
                 return ev
         return self.parse_auth(line)
 
-    def parse_web(self, line):
+    def parse_web(self, line, log_path=""):
         """解析 Nginx combined 行，一次取回协议 / 来路 / 受访页 / 会话所需字段。
 
         $request 形如 "GET /app/xxx?a=1 HTTP/1.1"，用 split 拆比正则更耐受畸形行；
@@ -489,22 +558,24 @@ class Collector(object):
         path = parts[1] if len(parts) > 1 else ""
         ts = to_ts_nginx(tstext)
         st = int(status)
-        scheme, conf = infer_scheme(referer, self.cfg)
-        proto = scheme or "web"          # 未识别时标 web，不硬猜 http/https
+        # 1.1.18：目标端口按「日志显式字段 → 端口映射 → 同站来路」多级读取，
+        # 并把来源写进 port_src，前端可如实标注置信度。
+        port, port_src = web_log_port(line, referer, self.cfg, log_path)
+        scheme, conf = infer_scheme(referer, self.cfg, port)
+        proto = scheme or "web"          # 无证据时标 web，不硬猜 http/https
         is_scan = bool(SCAN_PATH.search(path))
         if not is_scan and st >= 400 and not STATIC_PATH.search(path):
             is_scan = True
         action = ("扫描探测 · %s %s → %s" % (method, status, path)) if is_scan \
                  else ("正常访问 · %s %s" % (method, status))
-        # 1.1.16：端口只取日志里真实写出来的值，不再用应用自身端口冒充。
-        ev = self._base(ts, "local_web", ip, web_log_port(referer, line),
+        ev = self._base(ts, "local_web", ip, port,
                         "fnOS Web", action, "scan" if is_scan else "normal",
                         path, line)
         ev.update({
             "layer": "web", "proto": proto, "scheme_conf": conf,
             "method": method[:16], "status": st,
             "referer": referer[:300], "ua": ua[:300],
-            "sess_id": session_id(ip, ua, ts),
+            "sess_id": session_id(ip, ua, ts), "port_src": port_src,
         })
         return ev
 
@@ -700,8 +771,9 @@ class Collector(object):
             self.tailers.append(LogTailer("本机 · SSH 认证", self.cfg.get("auth_log", "/var/log/auth.log"),
                                           self.parse_auth_any, self.emit))
         if self.cfg.get("source_local_web", True):
-            self.tailers.append(LogTailer("本机 · Web 访问", self.cfg.get("web_log", "/usr/trim/nginx/logs/access.log"),
-                                          self.parse_web, self.emit))
+            web_path = self.cfg.get("web_log", "/usr/trim/nginx/logs/access.log")
+            self.tailers.append(LogTailer("本机 · Web 访问", web_path,
+                lambda ln, p=web_path: self.parse_web(ln, p), self.emit))
         if self.cfg.get("source_knock", False):
             self.tailers.append(LogTailer("端口敲门 · 内核日志", self.cfg.get("kern_log", "/var/log/kern.log"),
                                           self.parse_kern, self.emit))

@@ -4,6 +4,7 @@
 预览页不改变应用代码，只是覆盖 window.fetch 返回示例数据，用来检查
 JS 运行时错误、DOM 布局、Canvas 地图与 SVG 趋势图是否正常渲染。
 """
+import base64
 import os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -214,25 +215,25 @@ window.addEventListener('error',function(e){
   var diagText='IP 动态感知（ipsense）· 运行日志诊断包（离线预览）\n' +
     '生成时间：2026-11-19 00:00:00\n' +
     '说明：本文件已自动脱敏。地图 KEY / 令牌 / 口令已抹除；来访 IP 只保留前两段。\n\n' +
-    '1. 环境与应用状态\n  版本：1.1.17 · 运行中 · 数据源 3 路\n\n' +
+    '1. 环境与应用状态\n  版本：1.1.18 · 运行中 · 数据源 3 路\n\n' +
     '2. 主运行日志（尾部）\n  2026-11-19 00:00:01 INFO collector 已启动\n\n' +
     '3. 数据源状态\n  本机 SSH 已读取 · 本机 Web 已读取 · 路由器 syslog 文件不存在\n\n' +
-    '6.1 前端运行时报错（1.1.17，最近 100 条）\n' +
+    '6.1 前端运行时报错（1.1.18，最近 100 条）\n' +
     '  001 底图未显示：高德 SDK 未就绪 · map_sdk · KEY 无效\n';
-  // 1.1.17：运行时报错离线样本。预览页不连后端，POST 上报与查询都在这里闭环，
+  // 1.1.18：运行时报错离线样本。预览页不连后端，POST 上报与查询都在这里闭环，
   // 验收脚本可真实触发一个 JS 异常，再看它是否被采集并进入导出文本。
   var rtErrors=[
     {ts:now-120,kind:'map_sdk',level:'error',
      msg:'底图未显示：高德 SDK 未就绪：KEY 无效、未绑定 Web 端 (JS API)',
      src:'webapi.amap.com',provider:'amap',host:'webapi.amap.com',
-     mapState:'error',pill:'运行中 · 3 路数据源',ver:'1.1.17',count:1,stack:''},
+     mapState:'error',pill:'运行中 · 3 路数据源',ver:'1.1.18',count:1,stack:''},
     {ts:now-60,kind:'resource',level:'error',
      msg:'资源加载失败：https://webapi.amap.com/maps?<参数名:v,callback>',
      src:'https://webapi.amap.com/maps?<参数名:v,callback>',
      tag:'script',count:1,stack:''}
   ];
   var rtExportText='IP 动态感知（ipsense）· 运行时报错导出（离线预览）\n' +
-    '生成时间：2026-11-19 00:00:00\n应用版本：1.1.17\n' +
+    '生成时间：2026-11-19 00:00:00\n应用版本：1.1.18\n' +
     '[1] 概览\n  落盘记录总数 2 条\n\n' +
     '[2] 地图 SDK 专项（用户最常反馈的「底图没加载」）\n' +
     '  01 高德 SDK 未就绪：KEY 无效、未绑定 Web 端 (JS API)\n\n' +
@@ -245,18 +246,26 @@ window.addEventListener('error',function(e){
   var live=[],rows=[];
   for(var j=0;j<24;j++){
     var ip=(j%3===0?'45.155.205.'+(j+10):(j%3===1?'218.106.90.'+(j+100):'192.168.3.'+(j+20)));
+    // 1.1.18：端口按证据链补录并带 port_src。覆盖五种来源 + 一种「未记录」，
+    // 其中 referer 读出的 5666 用于验收「有来源就不隐藏」的 portLabel 修复。
+    var pc=j%6, p=0, psrc='';
+    if(pc===0){p=8443;psrc='log_tail';}
+    else if(pc===1){p=5666;psrc='referer';}
+    else if(pc===2){p=8080;psrc='log_cfg';}
+    else if(pc===3){p=9443;psrc='request_url';}
+    else if(pc===4){p=9001;psrc='log_field';}
     var e={id:1000+j,ts:now-j*7,ip:ip,source:j%5===0?'local_auth':'local_web',
       country:j%3===0?'荷兰':'中国',province:j%3===0?'South Holland':(j%2?'安徽省':'广东省'),
       city:'',district:(j%3===0?'':(j%2===0?'蜀山区':'包河区')),
       scope:j%3===0?'overseas':(j%7===0?'private':'cn'),
       verdict:j%4===0?'scan':(j%9===0?'attack':'normal'),
-      action:acts[j%5],path:j%4===0?'/.env':'/app/ipsense/',port:0,
+      action:acts[j%5],path:j%4===0?'/.env':'/app/ipsense/',port:p,port_src:psrc,
       proto:j%5===0?'ssh':(j%3===0?'https':'web'),scheme_conf:'none',
       method:'GET',status:200,referer:'-',ua:'Mozilla/5.0',sess_id:'s'+j,layer:'web'};
     live.push(e);
     rows.push({id:1000+j,ts:e.ts,source:e.source,ip:ip,country:e.country,
       province:e.province,city:'',district:e.district,
-      scope:e.scope,port:e.port,service:'fnOS Web',
+      scope:e.scope,port:e.port,port_src:e.port_src,service:'fnOS Web',
       action:e.action,verdict:e.verdict,path:e.path,lat:null,lng:null,isp:'',
       proto:e.proto,scheme_conf:e.scheme_conf,method:e.method,status:e.status,
       referer:e.referer,ua:e.ua,sess_id:e.sess_id,layer:e.layer});
@@ -404,10 +413,10 @@ window.addEventListener('error',function(e){
       return Promise.resolve({ok:true,status:200,blob:function(){
         return Promise.resolve(new Blob([summaryText],{type:'text/markdown'}));}});
     else if(u.indexOf('api/config')>=0) d={ok:true,data:cfg};
-    else if(u.indexOf('api/health')>=0) d={ok:true,version:'1.1.17'};
+    else if(u.indexOf('api/health')>=0) d={ok:true,version:'1.1.18'};
     // 1.1.15：脱敏诊断包与区级手工补充
     else if(u.indexOf('api/diag/export')>=0) d=diagText;
-    // 1.1.17：运行时报错上报 / 查询 / 导出（export 必须排在 errors 之前）
+    // 1.1.18：运行时报错上报 / 查询 / 导出（export 必须排在 errors 之前）
     else if(u.indexOf('api/runtime/errors/export')>=0){
       window.__rtExportHits++;
       d=rtExportText;
@@ -421,6 +430,13 @@ window.addEventListener('error',function(e){
         d={ok:true,saved:posted.length,total:rtErrors.length};
       } else d={ok:true,data:rtErrors,total:rtErrors.length};
     }
+    // 1.1.18：站内查询（复用在线多源核验），不依赖第三方反爬页面
+    else if(u.indexOf('api/geo/verify')>=0) d={ok:true,cached:false,ip:'220.205.86.196',
+      geo:{country:'中国',province:'安徽省',city:'合肥市',district:'蜀山区'},
+      verification:{confidence:'high',online_sources:3,
+        sources:[{source:'ip-api.com',country:'中国',province:'安徽省',city:'合肥市',district:''},
+                 {source:'ip.sb',country:'中国',province:'安徽省',city:'合肥',district:''},
+                 {source:'ipinfo.io',country:'中国',province:'安徽',city:'Hefei',district:''}]}};
     else if(u.indexOf('api/geo/district')>=0){
       var nd='';
       try{ nd=String((JSON.parse((opt&&opt.body)||'{}').district)||'').trim().slice(0,40); }
@@ -466,6 +482,13 @@ def main():
         with open(os.path.join(UI, name), "r", encoding="utf-8") as f:
             return f.read()
     html = rd("index.html")
+    # 1.1.18：单文件预览页把投喂二维码内联成 data URI，否则 file:// 下
+    # images/sponsor.png 相对路径失效，关于弹窗截图会显示破图占位。
+    sponsor = os.path.join(UI, "images", "sponsor.png")
+    if os.path.isfile(sponsor):
+        with open(sponsor, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("ascii")
+        html = html.replace("images/sponsor.png", "data:image/png;base64," + b64)
     html = html.replace("/*__CSS__*/", rd("style.css"))
     html = html.replace("<script>/*__JS__*/</script>", MOCK + "<script>" + rd("app.js") + "</script>")
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
