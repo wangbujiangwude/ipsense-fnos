@@ -166,6 +166,7 @@ window.addEventListener('error',function(e){
     syslog_port:5514,inbox_dir:'/vol1/@appdata/ipsense/inbox',
     auth_log:'/var/log/auth.log',web_log:'/usr/trim/nginx/logs/access.log',
     kern_log:'/var/log/kern.log',web_port:5666,ssh_port:22,keep_days:30,
+    geo_district_api_enabled:false,geo_district_api:'',geo_district_field:'district',
     map_key:'请到腾讯位置服务开放平台申请自己的 key 并替换此占位符',
     home_lat:31.8639,home_lng:117.2808,home_label:'本机 · 中国安徽合肥联通（出口 IP）',
     home_ip:'220.205.86.196',home_geo:'中国 安徽 合肥 联通',home_proxy_ip:'203.10.99.50',
@@ -213,7 +214,7 @@ window.addEventListener('error',function(e){
   var diagText='IP 动态感知（ipsense）· 运行日志诊断包（离线预览）\n' +
     '生成时间：2026-11-19 00:00:00\n' +
     '说明：本文件已自动脱敏。地图 KEY / 令牌 / 口令已抹除；来访 IP 只保留前两段。\n\n' +
-    '1. 环境与应用状态\n  版本：1.1.15 · 运行中 · 数据源 3 路\n\n' +
+    '1. 环境与应用状态\n  版本：1.1.16 · 运行中 · 数据源 3 路\n\n' +
     '2. 主运行日志（尾部）\n  2026-11-19 00:00:01 INFO collector 已启动\n\n' +
     '3. 数据源状态\n  本机 SSH 已读取 · 本机 Web 已读取 · 路由器 syslog 文件不存在\n';
   var live=[],rows=[];
@@ -221,10 +222,10 @@ window.addEventListener('error',function(e){
     var ip=(j%3===0?'45.155.205.'+(j+10):(j%3===1?'218.106.90.'+(j+100):'192.168.3.'+(j+20)));
     var e={id:1000+j,ts:now-j*7,ip:ip,source:j%5===0?'local_auth':'local_web',
       country:j%3===0?'荷兰':'中国',province:j%3===0?'South Holland':(j%2?'安徽省':'广东省'),
-      city:'',district:(j%2===0?'蜀山区':''),
+      city:'',district:(j%3===0?'':(j%2===0?'蜀山区':'包河区')),
       scope:j%3===0?'overseas':(j%7===0?'private':'cn'),
       verdict:j%4===0?'scan':(j%9===0?'attack':'normal'),
-      action:acts[j%5],path:j%4===0?'/.env':'/app/ipsense/',port:5666,
+      action:acts[j%5],path:j%4===0?'/.env':'/app/ipsense/',port:0,
       proto:j%5===0?'ssh':(j%3===0?'https':'web'),scheme_conf:'none',
       method:'GET',status:200,referer:'-',ua:'Mozilla/5.0',sess_id:'s'+j,layer:'web'};
     live.push(e);
@@ -235,6 +236,15 @@ window.addEventListener('error',function(e){
       proto:e.proto,scheme_conf:e.scheme_conf,method:e.method,status:e.status,
       referer:e.referer,ua:e.ua,sess_id:e.sess_id,layer:e.layer});
   }
+  // 1.1.16：真机区级初始为空（三家在线源 + ip9 都拿不到区县），手工回填后才有值。
+  // 预览页用这一份有状态 geo 真实验证「保存区级 → 画像归属地出现区县」。
+  var ipGeo={ip:'220.195.201.172',country:'中国',province:'安徽省',city:'合肥',
+    district:'',district_source:'',isp:'联通',scope:'cn',lat:31.809806,lng:117.301293,
+    confidence:'high',online_sources:3,disagree:1,checked_at:now-3600,
+    local:{country:'中国',province:'安徽省',city:'合肥',district:''},
+    sources:[{source:'ip-api.com',country:'中国',province:'安徽省',city:'合肥',district:''},
+      {source:'ip.sb',country:'中国',province:'安徽',city:'合肥',district:''},
+      {source:'ip2region',country:'中国',province:'重庆市',city:'重庆市',district:''}]};
   var sources={started:now-3600,queue:0,syslog_port:5514,syslog_ok:true,syslog_error:'',
     knock_enabled:false,knock_installed:false,geo_ready:true,
     knock_app_enabled:false,knock_app_dir:'/vol1/@appdata/fn-knock-lite/gateway/logs',
@@ -286,8 +296,8 @@ window.addEventListener('error',function(e){
       {ip:'203.0.113.9',n:440,first_ts:now-70000,last_ts:now-1800,country:'中国',province:'安徽省',city:'合肥市',isp:'联通',scope:'cn',verdict:'normal',proto:'web'}
     ],
     recent:[
-      {ts:now-30,ip:'45.155.205.113',proto:'web',verdict:'scan',action:'扫描探测 · GET 404 /.env',path:'/.env',port:5666,status:404,method:'GET',referer:'-'},
-      {ts:now-95,ip:'192.168.3.38',proto:'web',verdict:'normal',action:'正常访问 · GET 200 /',path:'/app/ipsense/',port:5666,status:200,method:'GET',referer:'-'}
+      {ts:now-30,ip:'45.155.205.113',proto:'web',verdict:'scan',action:'扫描探测 · GET 404 /.env',path:'/.env',port:0,status:404,method:'GET',referer:'-'},
+      {ts:now-95,ip:'192.168.3.38',proto:'web',verdict:'normal',action:'正常访问 · GET 200 /',path:'/app/ipsense/',port:0,status:200,method:'GET',referer:'-'}
     ]};
   window.addEventListener('load',function(){
     setTimeout(function(){
@@ -347,7 +357,7 @@ window.addEventListener('error',function(e){
       }
     },1600);
   });
-  window.fetch=function(u){
+  window.fetch=function(u,opt){
     u=String(u);
     // 1.1.7：#conn-fail 下只让 events 失败一次，用于观察琥珀态与自动恢复
     if(window.__connFailOnce && u.indexOf('api/events')>=0 && !window.__connFailDone){
@@ -369,11 +379,16 @@ window.addEventListener('error',function(e){
       return Promise.resolve({ok:true,status:200,blob:function(){
         return Promise.resolve(new Blob([summaryText],{type:'text/markdown'}));}});
     else if(u.indexOf('api/config')>=0) d={ok:true,data:cfg};
-    else if(u.indexOf('api/health')>=0) d={ok:true,version:'1.1.15'};
+    else if(u.indexOf('api/health')>=0) d={ok:true,version:'1.1.16'};
     // 1.1.15：脱敏诊断包与区级手工补充
     else if(u.indexOf('api/diag/export')>=0) d=diagText;
-    else if(u.indexOf('api/geo/district')>=0) d={ok:true,ip:'220.205.86.196',
-      district:'蜀山区',events_updated:3};
+    else if(u.indexOf('api/geo/district')>=0){
+      var nd='';
+      try{ nd=String((JSON.parse((opt&&opt.body)||'{}').district)||'').trim().slice(0,40); }
+      catch(eD){}
+      ipGeo.district=nd; ipGeo.district_source=nd?'manual':'';
+      d={ok:true,ip:ipGeo.ip,district:nd,events_updated:3};
+    }
     else if(u.indexOf('api/locate')>=0) d={ok:true,ip:'220.205.86.196',proxy_ip:'203.10.99.50',
       has_proxy:true,geo_text:'中国 安徽 合肥 联通',
       online:{country:'中国',region:'Anhui Sheng',city:'Hefei',lat:31.8639,lng:117.2808,source:'ipwho.is'},
@@ -399,7 +414,7 @@ window.addEventListener('error',function(e){
       verdicts:[{k:'normal',n:150},{k:'attack',n:36}],
       referrers:[{k:'-',n:98},{k:'http://192.168.3.5:5666/',n:22}],
       uas:[{ua:'Mozilla/5.0 (Windows NT 10.0) Chrome/138.0',n:186}],
-      window:{rows:3000,limit:3000,truncated:true}},geo:spots[0]};
+      window:{rows:3000,limit:3000,truncated:true}},geo:ipGeo,verification:ipGeo};
     return Promise.resolve(R(d));
   };
 })();

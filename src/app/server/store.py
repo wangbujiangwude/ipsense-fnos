@@ -155,6 +155,15 @@ class Store(object):
             online_sources  INTEGER DEFAULT 0,
             checked_at      REAL
         );
+        -- 1.1.16：离线库省级脏值的在线裁决订正（例 39.144.239.169 被离线库
+        -- 判成「重庆市」，三家在线源多数派为「安徽 / 合肥」）。固化后即使
+        -- 无外网、重新 force 核验，也不会再把重庆带回投票与 local_* 展示。
+        CREATE TABLE IF NOT EXISTS geo_local_fix (
+            ip              TEXT PRIMARY KEY,
+            country         TEXT, province TEXT, city TEXT, district TEXT, isp TEXT,
+            label           TEXT, scope TEXT, lat REAL, lng REAL,
+            ipver           INTEGER DEFAULT 4, updated_at REAL
+        );
         """)
         self.conn.commit()
         self._ensure_columns()
@@ -563,6 +572,79 @@ class Store(object):
                     vf.get("checked_at", time.time())))
             self.conn.commit()
 
+    # ---------------- 1.1.16：端口订正 / 离线库脏值固化 ----------------
+    def normalize_web_ports(self, web_port=5666):
+        """把历史 local_web 事件里被填成应用自身端口的值一次性订正为 0。幂等。"""
+        if self.get_meta("web_port_normalized_116") == "1":
+            return 0
+        with self.lock:
+            cur = self.conn.execute(
+                "UPDATE events SET port=0 WHERE source='local_web' AND port=?",
+                (int(web_port),))
+            self.conn.commit()
+            n = cur.rowcount
+            self.set_meta("web_port_normalized_116", "1")
+        self.clear_cache()
+        return n
+
+    def local_fix(self, ip):
+        """读取该 IP 离线库脏值的在线裁决订正；没有返回 None。"""
+        with self.lock:
+            r = self.conn.execute(
+                "SELECT * FROM geo_local_fix WHERE ip=?", (ip,)).fetchone()
+        if not r:
+            return None
+        d = dict(r)
+        d["ip"] = ip
+        return {k: d.get(k) for k in
+                ("ip", "country", "province", "city", "district", "isp",
+                 "label", "scope", "lat", "lng", "ipver")}
+
+    def put_local_fix(self, ip, geo):
+        """把在线多数派裁决结果固化为该 IP 的本地判定，供无网 / 强制核验使用。"""
+        with self.lock:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO geo_local_fix "
+                "(ip,country,province,city,district,isp,label,scope,lat,lng,ipver,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (ip, geo.get("country", ""), geo.get("province", ""),
+                 geo.get("city", ""), geo.get("district", ""), geo.get("isp", ""),
+                 geo.get("label", ""), geo.get("scope", "cn"),
+                 geo.get("lat"), geo.get("lng"), geo.get("ipver", 4), time.time()))
+            self.conn.commit()
+
+    def normalize_local_geo(self):
+        """升级时把已裁决但 local_* 仍残留离线库脏值的记录同步过来。幂等。"""
+        if self.get_meta("local_geo_normalized_116") == "1":
+            return 0
+        n = 0
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT ip,country,province,city,district,isp,label,scope,lat,lng,ipver "
+                "FROM geo_cache WHERE disagree=1 AND "
+                "((local_province<>'' AND local_province<>province) OR "
+                " (local_city<>'' AND local_city<>city))").fetchall()
+            for r in rows:
+                g = dict(r)
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO geo_local_fix "
+                    "(ip,country,province,city,district,isp,label,scope,lat,lng,ipver,updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (r["ip"], g.get("country", ""), g.get("province", ""),
+                     g.get("city", ""), g.get("district", ""), g.get("isp", ""),
+                     g.get("label", ""), g.get("scope", "cn"),
+                     g.get("lat"), g.get("lng"), g.get("ipver", 4), time.time()))
+                self.conn.execute(
+                    "UPDATE geo_cache SET local_country=?, local_province=?, local_city=? "
+                    "WHERE ip=?",
+                    (g.get("country", ""), g.get("province", ""),
+                     g.get("city", ""), r["ip"]))
+                n += 1
+            self.conn.commit()
+            self.set_meta("local_geo_normalized_116", "1")
+        self.clear_cache()
+        return n
+
     def geo_cache_count(self):
         with self.lock:
             return self.conn.execute("SELECT COUNT(*) FROM geo_cache").fetchone()[0]
@@ -586,6 +668,9 @@ class Store(object):
                  geo.get("scope", "cn"), geo.get("lat"),
                  geo.get("lng"), ip))
             self.conn.commit()
+            # 1.1.16：归属回写后让地域分布 / 排名缓存立即失效，否则离线库
+            # 脏值会在 geodist 缓存里残留成一个假的「重庆市」气泡。
+            self.clear_cache()
             return cur.rowcount
 
     def set_district(self, ip, district):

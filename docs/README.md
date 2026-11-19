@@ -82,7 +82,25 @@ FPK
 
 ### 功能演进
 
-**1.1.15（当前版本）**
+**1.1.16（当前版本）**
+
+- 🐛 **真机弧线全部不显示**：1.1.15 为跨日期变更线长弧生成 `-360 / 0 / +360` 三份世界副本折线，真机腾讯地图 GL 的 `MultiPolyline` 只接受 `[-180,180]` 经度，实测美国方向产出 `-540°~+540°`、297 个点里 196 个越界，整层折线被拒绝渲染，两张地图一条线都没有。离线预览走 Canvas 降级、上一轮真机验收又主动屏蔽了外网底图 SDK，因此没覆盖这条路径。修复为 SDK 侧统一归一化到合法窗口并在 `±180` 边界分段（`wrapSegs`），Canvas 侧继续用本机中心连续窗口让两段首尾相接；`sdkLat()` 再做坐标钳制兜底。`tools/check_116_geometry.mjs` 实测 4 组方向全部 0 越界。
+- 🐛 **设置开关点不动**：`sw()` 生成的 checkbox 是 `0×0` 且 `opacity:0`，可见滑块是 label 外的 `<i>`，点击不会触发 checkbox。修复为 `label[for]` + input 绝对定位铺满 `.switch`，`<i>` 设 `pointer-events:none`。
+- 🐛 **目标端口恒为 5666**：Nginx combined 日志不含目标端口，旧实现把应用自身监听端口 `web_port` 填进 `port`。新增 `web_log_port()` 只认日志行尾的 `$server_port`，Referer 是上一个页面的 URL、不参与推断（真机同站来源带 `:5666` 会让每条又变成 5666）；升级时 `normalize_web_ports()` 幂等订正历史记录，前端显示「未记录」。
+- 🐛 **离线库把 `39.144.239.169` 判成重庆市**：该 IP 离线库返回重庆，三家在线源多数派为安徽 / 合肥。旧逻辑每次 `force` 核验都用 `lookup_uncached()` 把重庆重新带进本地票，`geo_cache.local_*` 也一直残留，地域分布缓存因此留下一个「重庆市 165」的假气泡。新增 `geo_local_fix` 表固化在线裁决，`verify()` 优先取订正值；`apply_geo()` 回写后 `clear_cache()`，升级时 `normalize_local_geo()` 幂等同步历史缓存。
+- 🆕 **区级归属的现实口径**：实测 `ip-api.com` / `ip.sb` / `ipinfo.io` 免费版都不返回 `district`，`ip9.com.cn` 的 `area` 对 5 个国内 IP 全为空 —— 1.1.15 的自动区级补充实际拿不到数据。用户提到的 `tool.hiofd.com/ip/` 能返回「包河 / 龙川路」，但它的 `/router/rest?method=IpQuery` 带 DES 签名反爬，免签名直连一律 `HTTP 444`，不是公开 API，因此不内置自动调用。改为画像里提供「在线校验」一键打开查询页并复制 IP，查到的区县回填 `/api/geo/district`；设置里另开放自定义 JSON 区级接口（`{ip}` 占位 + 字段路径），默认关闭，强制 https 且禁止内网 / 元数据地址。区级补全入口对**所有** IP 可见，不再只在已在线核验的 IP 上出现 —— 新 IP 恰恰最需要补区县。
+
+**真机回归二次修复（本版额外修掉的 3 个缺陷）**
+
+本版坚持在真机上走**未屏蔽外网的腾讯地图合规底图 SDK 路径**，因此抓出 3 个离线预览与静态自检都覆盖不到的问题：
+
+- `sdkLat()` 初版定义在 `createTMaps()` 内部，而调用它的 `drawTMaps()` 是另一个顶层函数；SDK 底图一执行折线绘制就抛 `Uncaught ReferenceError: sdkLat is not defined`，整层弧线不渲染。离线预览走 Canvas 坐标散点降级，永远执行不到这行。已提升为 IIFE 顶层函数，并在几何检查 / 全量自检 / 包校验 / 预览验收四处加静态作用域断言；修复后真机 hook 捕获到提交给 SDK 的 `LatLng` 从 6 个增至 **205 个**，全程 0 未捕获异常。
+- `web_log_port()` 初版允许从 `Referer` 取端口。真机 `access.log` 的 Referer 是 `http://<host>:5666/app/ipsense/`，那是用户浏览器访问 fnOS 桌面时「上一个页面」的端口，不是当前请求的目标端口，于是 `/api/live` 又全变成 5666。已彻底不再解析 Referer，只认自定义 `log_format` 行尾的 `$server_port`；二次部署后实时端口从 `[5666×6]` 变为 `[0×6]`。
+- 「在线校验」里的 `navigator.clipboard.writeText()` 在内嵌 WebView / 页面未聚焦时返回被拒绝的 Promise，`try/catch` 抓不到异步拒绝，会污染成 `unhandledrejection`。已显式 `.catch()` 吞掉，功能不变（仍可手动复制并打开查询页）。
+
+上述三项都在 `fn-OESP` 上复现 → 修复 → 重新打包 → 重新卸载重装 → 复验闭环，详见 `build/ipsense-1.1.16-OESP真机回归验收报告.html`（本地报告，不随 FPK 分发）。
+
+**1.1.15**
 
 - 🐛 **境外全球视图长弧线中断**：根因有两层。等距投影侧旧窗口固定 `[-180,180]`，跨国际日期变更线的长弧被 `wrapSegs()` 切成两半分别落在画布最左 / 最右，中间隔着整幅地图；SDK 侧 `MultiPolyline` 只渲染一个 360° 窗口，切两半后通常只有一半落在视野内。修复为「以本机经度为中心的 360° 连续窗口」（`worldCenteredBounds()` / `unwrapTo()`），被切开的两段在窗口内自然首尾相接；SDK 侧另由 `worldSegs()` 生成 `-360 / 0 / +360` 三份世界副本折线，任意视野里都有一条完整弧。跨 seam 长弧采样从 64 段加密到 96 段。数值回归（`tools/check_115_geometry.mjs`）实测展开后 0 个 360° 跳变、两段在 180° 处经度差 0、末点正确落到本机。
 - 🐛 **同省内 IP 不显示**：两个独立缺陷叠加。前端 `buildArcs()` 近距阈值 `0.35°` 把同省不同市（广州 113.26 / 深圳 114.06，距离度量 1.2651）整组判成「与本机重合」，只留 2.6px 小点不画弧；后端 `_geo_distribution_uncached(scope="all")` 把所有境内归并成一个「中国」气泡。修复为阈值降到 `0.02°`（约 2km）、后端境内按省细分并返回 `r.scope`、前端气泡下钻按 `r.scope` 选匹配字段。另查出省份名不统一（离线库「安徽省」/ 在线源「安徽」）会拆成两个气泡，新增按 `GeoResolver._province_key()` 归一合并；坐标查找也补了短名宽松匹配，避免 `lat/lng=None` 导致气泡根本不画。
@@ -473,7 +491,7 @@ $PY tools/make_icon.py                 # 生成图标
 $PY tools/selftest.py                  # 离线自检
 node --check src/app/ui/app.js         # 前端语法
 PY=$PY bash tools/build_fpk.sh         # 打包（LF / 可执行位 / py_compile / checksum）
-$PY tools/deploy.py --fpk build/ipsense_1.1.15_all.fpk
+$PY tools/deploy.py --fpk build/ipsense_1.1.16_all.fpk
 ```
 
 `build_fpk.sh` 用 `tarfile` 显式写权限位（`cmd/*` = 0755），避免从 Windows 打包时丢可执行位；
@@ -487,9 +505,9 @@ ipsense 是纯 Python 标准库 + JS/CSS + `ip2region` 数据文件，没有任�
 
 | 安装包 | `platform` | 适用 |
 |---|---|---|
-| `ipsense_1.1.15_all.fpk` | `all` | 通用，x86 与 ARM 都能装，**推荐** |
-| `ipsense_1.1.15_x86.fpk` | `x86` | x86_64 设备，或按架构分发的应用源 |
-| `ipsense_1.1.15_arm.fpk` | `arm` | aarch64 设备，或按架构分发的应用源 |
+| `ipsense_1.1.16_all.fpk` | `all` | 通用，x86 与 ARM 都能装，**推荐** |
+| `ipsense_1.1.16_x86.fpk` | `x86` | x86_64 设备，或按架构分发的应用源 |
+| `ipsense_1.1.16_arm.fpk` | `arm` | aarch64 设备，或按架构分发的应用源 |
 
 `build_fpk.sh` 打完通用包后会自动调用 `tools/build_multiarch.py` 派生另两个包（`SKIP_MULTIARCH=1` 可跳过）。派生脚本不修改 `src/manifest`、不改动 `all` 包，且逐成员校验「除 `platform` 行外字节与权限完全一致」。
 

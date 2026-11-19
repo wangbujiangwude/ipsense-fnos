@@ -24,6 +24,31 @@ import collections
 from store import Store
 from geoip import is_private
 
+
+def web_log_port(referer, line):
+    """1.1.16：只从日志里显式的 $server_port 读取目标端口；读不到返回 0。
+
+    Nginx combined 标准格式根本不含目标端口。1.1.15 之前把应用自身监听端口
+    web_port（默认 5666）填进 port，导致本机 Web 的每一条记录都显示 5666。
+
+    1.1.16 真机回归二次修复：初版还允许从 Referer 里取端口，但真机 access.log
+    的 Referer 是 http://<host>:5666/app/ipsense/ —— 那是用户浏览器访问 fnOS
+    桌面时「上一个页面」的端口，不是当前请求的目标端口。同站来源会让每条
+    本机 Web 事件又全变成 5666，正是用户反馈的「都是 5666 端口，不准确」。
+    Referer 语义上就不能用来推断当前请求的目标端口，因此彻底不再解析它。
+
+    唯一可信来源是自定义 log_format 追加在行尾的 $server_port：
+        ... "UA" 8443
+    没有就返回 0，前端显示「未记录」，绝不猜测。
+    referer 参数保留仅为兼容既有调用点，不参与计算。
+    """
+    m = re.search(r'"\s+(\d{2,5})\s*$', (line or "").rstrip())
+    if m:
+        p = int(m.group(1))
+        if 0 < p < 65536:
+            return p
+    return 0
+
 ISO_TS = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z))")
 NGINX_TS = re.compile(r"\[([^\]]+)\]")
 # 1.1.0：fnOS 的 nginx 本来就是 combined 格式，$request / $status / $http_referer /
@@ -471,7 +496,8 @@ class Collector(object):
             is_scan = True
         action = ("扫描探测 · %s %s → %s" % (method, status, path)) if is_scan \
                  else ("正常访问 · %s %s" % (method, status))
-        ev = self._base(ts, "local_web", ip, int(self.cfg.get("web_port", 5666)),
+        # 1.1.16：端口只取日志里真实写出来的值，不再用应用自身端口冒充。
+        ev = self._base(ts, "local_web", ip, web_log_port(referer, line),
                         "fnOS Web", action, "scan" if is_scan else "normal",
                         path, line)
         ev.update({

@@ -213,6 +213,44 @@ def fetch_ipinfo(ip):
     }
 
 
+def fetch_custom_district(ip, settings):
+    """1.1.16：用户自定义区级接口，URL 用 {ip} 占位，按点号路径取区县。
+
+    安全边界（防止设备变成任意 URL 代理）：只接受 https、必须含 {ip} 占位、
+    禁止回环 / 内网 / 云元数据 / IPv6 主机、5 秒超时、结果只取字符串并截断。
+    失败一律返回 None，不影响主裁决流程。
+    """
+    if not settings.get("geo_district_api_enabled", False):
+        return None
+    tpl = (settings.get("geo_district_api") or "").strip()
+    if not tpl or "{ip}" not in tpl:
+        return None
+    u = tpl.replace("{ip}", urllib.parse.quote(str(ip), safe=""))
+    p = urllib.parse.urlparse(u)
+    h = (p.hostname or "").lower()
+    if p.scheme != "https" or not h or ":" in h:
+        return None
+    blocked = ("localhost", "127.0.0.1", "0.0.0.0", "169.254.169.254",
+               "metadata.google.internal", "metadata", "[::1]")
+    if h in blocked or h.startswith(("127.", "10.", "192.168.", "169.254.")):
+        return None
+    if any(h.startswith("172.%d." % i) for i in range(16, 32)):
+        return None
+    obj = json.loads(_http(u, timeout=5))
+    path = (settings.get("geo_district_field") or "district").strip()
+    cur = obj
+    for seg in path.split("."):
+        if isinstance(cur, dict):
+            cur = cur.get(seg)
+        elif isinstance(cur, list) and seg.isdigit() and int(seg) < len(cur):
+            cur = cur[int(seg)]
+        else:
+            return None
+    if not isinstance(cur, str):
+        return None
+    return norm_district(cur)[:40] or None
+
+
 def fetch_ip9(ip):
     """国内区县级补充源（1.1.15）：只取 area 作为 district。
 
@@ -463,6 +501,14 @@ class GeoVerifier(object):
                 return {"ok": True, "cached": True, "ip": ip,
                         "geo": hit, "verification": hit.get("verification")}
         local = self.geo.lookup_uncached(ip)
+        # 1.1.16：离线库省级脏值被在线多数派订正后要固化下来，否则每次
+        # force 核验都会把「重庆市」重新带进本地票、local_* 展示与地域聚合。
+        try:
+            fix = self.store.local_fix(ip) if hasattr(self.store, "local_fix") else None
+            if fix:
+                local = fix
+        except Exception as e:
+            self.log("local_fix %s: %s" % (ip, e))
         online, errors = [], []
 
         def run(item):
@@ -482,19 +528,33 @@ class GeoVerifier(object):
                 if err:
                     errors.append(err)
         geo, vf = vote(local, online)
-        # 1.1.15：区级补充探测（独立源，不进裁决；失败不影响主流程）。
+        # 1.1.16：区级补充探测（独立源，不进裁决；失败不影响主流程）。
+        # 实测 ip-api.com / ip.sb / ipinfo.io 免费版都不返回 district，
+        # ip9.com.cn 的 area 对多个国内 IP 也全为空，所以 1.1.15 的自动
+        # 区级补充实际上拿不到数据；优先让用户填自己的 JSON 接口。
         if not geo.get("district") and geo.get("country") == "中国" and \
                 self.settings.get("geo_district_enabled", True):
             try:
-                d9 = fetch_ip9(ip)
-                if d9 and d9.get("district"):
-                    geo["district"] = d9["district"]
+                dc = fetch_custom_district(ip, self.settings)
+                if dc:
+                    geo["district"] = dc
                     geo["label"] = "·".join(
                         [x for x in (geo["country"], geo["province"],
                                      geo["city"], geo["district"]) if x])
-                    vf["district_source"] = "ip9.com.cn"
+                    vf["district_source"] = "custom"
             except Exception as e:
-                errors.append("ip9: %s" % str(e)[:80])
+                errors.append("custom-district: %s" % str(e)[:80])
+            if not geo.get("district"):
+                try:
+                    d9 = fetch_ip9(ip)
+                    if d9 and d9.get("district"):
+                        geo["district"] = d9["district"]
+                        geo["label"] = "·".join(
+                            [x for x in (geo["country"], geo["province"],
+                                         geo["city"], geo["district"]) if x])
+                        vf["district_source"] = "ip9.com.cn"
+                except Exception as e:
+                    errors.append("ip9: %s" % str(e)[:80])
         vf["errors"] = errors
         vf["local"] = {"country": local.get("country"), "province": local.get("province"),
                        "city": local.get("city"), "isp": local.get("isp")}
@@ -505,6 +565,12 @@ class GeoVerifier(object):
         except Exception as e:
             updated = 0
             self.log("apply_geo %s: %s" % (ip, e))
+        # 在线多数派与离线库冲突时固化裁决结果，杜绝脏值反复回流。
+        if vf.get("disagree") and vf.get("online_sources", 0) >= 2:
+            try:
+                self.store.put_local_fix(ip, dict(geo, ip=ip))
+            except Exception as e:
+                self.log("put_local_fix %s: %s" % (ip, e))
         self.geo.invalidate(ip)
         with self.stats_lock:
             self.verified += 1

@@ -137,7 +137,7 @@ def build_bundle(app):
         dest = os.environ.get("TRIM_APPDEST", "")
         var = os.environ.get("TRIM_PKGVAR", "")
         ver = (getattr(sys.modules.get("__main__"), "VERSION", "")
-               or getattr(app, "version", "") or "1.1.15")
+               or getattr(app, "version", "") or "1.1.16")
         b.kv("应用版本", ver)
         b.kv("Python", sys.version.split()[0])
         b.kv("系统 / 架构", "%s / %s" % (platform.system(), platform.machine()))

@@ -568,7 +568,7 @@
         esc(VERDICT_NAME[x.verdict] || x.verdict || '记录') + ' · ' +
         esc(x.path || x.action || '连接') +
         (x.status ? ' <small style="color:var(--dim)">' + esc(x.status) + '</small>' : '') +
-        '</span><span>' + (x.port || '—') + '</span></div>';
+        '</span><span>' + portLabel(x.port, x.source) + '</span></div>';
     }).join('') : '<div class="empty">暂无连接记录</div>';
     $('zoomDetail').innerHTML = h;
   }
@@ -792,7 +792,7 @@
           '<td>' + esc(loc) + '</td>' +
           '<td><span class="badge ' + esc(r.scope) + '">' + esc(SCOPE_NAME[r.scope] || '未知') + '</span></td>' +
           '<td>' + protoChip(r.proto) + (r.status ? ' <small style="color:var(--dim)">' + r.status + '</small>' : '') + '</td>' +
-          '<td>' + (r.port || '—') + '</td>' +
+          '<td>' + portLabel(r.port, r.source) + '</td>' +
           '<td><span class="badge ' + esc(r.verdict) + '">' + esc(VERDICT_NAME[r.verdict] || '记录') + '</span></td>' +
           '<td><span class="path" title="' + esc(r.action) + '">' + act + '</span></td></tr>';
       }).join('');
@@ -1306,31 +1306,41 @@
     return segs;
   }
   function worldSegs(pts) {
-    // 1.1.15 修复「境外全球视图长弧线中断」——SDK 底图侧：
-    // SDK 只渲染一个 360° 窗口，跨日期变更线的长弧被切两半后通常只有一半
-    // 落在视野里，看起来就是线画到一半断了。这里给跨 seam 的长弧额外生成
-    // -360 / +360 两份世界副本，SDK 会裁掉视野外的，任意视野里都至少有一条
-    // 从头到尾完整的弧线；短弧仍只生成一份，不浪费几何。
-    var lo = Infinity, hi = -Infinity;
-    pts.forEach(function (p) { lo = Math.min(lo, p.lng); hi = Math.max(hi, p.lng); });
-    var crosses = (lo < -180 || hi > 180 || hi - lo > 100);
-    var bases = crosses ? [-360, 0, 360] : [0];
-    var out = [];
-    bases.forEach(function (base) {
-      wrapSegs(pts, base).forEach(function (seg) {
-        if (seg.length > 1) out.push(seg);
-      });
+    // 1.1.16 真机回归修复：1.1.15 给跨 seam 长弧生成 -360 / +360 世界副本，
+    // 实测美国方向会产出 -540°~+540° 的经度（297 个点里 196 个越界）。
+    // 腾讯地图 GL 的 MultiPolyline / LatLng 只接受 [-180,180]，非法几何会让
+    // 整层折线不渲染，表现为两张地图「一条弧线都没有」；离线预览走 Canvas
+    // 降级所以没暴露。现在 SDK 侧统一收敛到合法窗口：跨日期变更线由
+    // wrapSegs 在 ±180 边界切成两段分别绘制；Canvas 侧另用 unwrapTo() 的
+    // 本机中心连续窗口让两段首尾相接，长弧视觉上仍然连续。
+    var norm = pts.map(function (p) {
+      var x = Number(p.lng) || 0;
+      x = ((x + 180) % 360 + 360) % 360 - 180;
+      return { lat: p.lat, lng: x };
     });
-    return out;
+    var out = [];
+    wrapSegs(norm, 0).forEach(function (seg) {
+      if (seg.length > 1) out.push(seg);
+    });
+    return out.length ? out : [norm];
   }
   function arcPaths(from, to, scope) {
     var g = arcControl(from, to, scope), full = [], i;
     for (i = 0; i <= g.n; i++) full.push(bezierAt(g, i / g.n));
     // 1.0.11：整条曲线一次生成、统一单色；跨 180° 由 wrapSegs 统一切断
     g.segs = wrapSegs(full);            // Canvas 主窗口：配合本机中心窗口首尾相接
-    g.sdkSegs = worldSegs(full);        // SDK 合规底图：世界副本，长弧不再中断
+    g.sdkSegs = worldSegs(full);        // SDK 合规底图：合法经度窗口，跨 seam 分段
     g.cross = g.sdkSegs.length > 1 ? 1 : 0;
     return g;
+  }
+  // 1.1.16 真机回归二次修复：sdkLat 必须定义在 IIFE 顶层。
+  // 初版把它放在 createTMaps() 内部，而 drawTMaps() 是另一个顶层函数，
+  // SDK 合规底图路径一执行就抛 ReferenceError: sdkLat is not defined，
+  // 整层折线不渲染 —— 离线预览走 Canvas 降级，所以完全没暴露。
+  function sdkLat(lat, lng) {
+    var a = Math.max(-85, Math.min(85, Number(lat) || 0));
+    var o = Math.max(-180, Math.min(180, Number(lng) || 0));
+    return new SDK.LatLng(a, o);
   }
   // 按行政区聚合：境内按省、境外按国家。后端 hotspots 已带 province / country，
   // 坐标取组内加权平均，消除离线库按 IP 做的 MD5 抖动假散点。
@@ -1648,14 +1658,14 @@
         var cid = prefix + '_' + Math.round(b.lat * 1000) + '_' + Math.round(b.lng * 1000);
         // 指纹含坐标与弯曲幅度：几何真变了才提交 GPU 缓冲
         var sig = [b.tier, b.verdict, b.lat, b.lng, home.lat, home.lng, S.arcBend].join('|');
-        // 1.1.15：SDK 用世界副本折线；无该字段时回退主窗口，兼容旧缓存数据
+        // 1.1.16：SDK 折线全部落在合法经度窗口；无该字段时回退主窗口
         (b.g.sdkSegs || b.g.segs).forEach(function (seg, j) {
           var id = cid + '_s' + j;
           geos.push({
             id: id, sig: sig,
             geo: { id: id, styleId: 't' + b.tier,
                    properties: { markId: cid + '_m' },
-                   paths: seg.map(function (p) { return new SDK.LatLng(p.lat, p.lng); }) }
+                   paths: seg.map(function (p) { return sdkLat(p.lat, p.lng); }) }
           });
         });
         marks.push({
@@ -1820,13 +1830,26 @@
       }).join('') + '</div>';
   }
   // 归属核验：展示多源交叉的每个数据源原始判定、裁决结果与置信度（1.0.8）
+  // 1.1.16：Nginx combined 日志不记录目标端口。1.1.15 之前把应用自身监听
+  // 端口（web_port，默认 5666）填进 port，导致本机 Web 每条都显示 5666 ——
+  // 那是软件自己的端口，不是被访问的端口。现在日志没写就显示「未记录」，
+  // 历史值由后端升级时一次性订正为 0；这里再兜一层旧值兼容。
+  function portLabel(p, src) {
+    var n = Number(p) || 0;
+    if (n <= 0) return '未记录';
+    var own = Number((S.cfg || {}).web_port || 5666);
+    if (src === 'local_web' && n === own) return '未记录';
+    return String(n);
+  }
+
   function verifyBlock(ip, v) {
     var h = '<h3 style="font-size:13px;margin:18px 0 8px">归属核验 · 多源交叉</h3>';
     if (!v) {
       return h + '<div class="verify-box">' +
         '<p class="hint" style="margin:0 0 10px">该 IP 尚未在线核验，当前展示的是随包离线库判定。' +
         '在线核验会同时查询 ip-api.com / ip.sb / ipinfo.io，并与本地库共 4 票多数派裁决。</p>' +
-        '<button class="profile-btn" data-act="verify">立即在线核验</button></div>';
+        '<button class="profile-btn" data-act="verify">立即在线核验</button></div>' +
+        districtBlock(null);
     }
     // 1.1.15：区级信息（省 / 市 / 区县）统一进入裁决结果、每个数据源明细与画像头部
     var loc = [v.country, v.province, v.city, v.district].filter(Boolean).join(' · ');
@@ -1854,16 +1877,28 @@
         '各数据源判定不一致，已按多数派裁决。出口 IP 的归属不等于设备物理位置。</p>';
     }
     h += '<button class="profile-btn" data-act="verify">重新核验（忽略缓存）</button></div>';
-    // 免费在线源对区县覆盖不稳定：查不到时允许手工填写，直接回写该 IP 的历史记录
-    h += '<div class="verify-box" style="margin-top:10px">' +
-      '<p class="hint" style="margin:0 0 8px">区县由独立源补充，免费接口覆盖不全。' +
-      '缺失时可手工填写，保存后会写入 geo_cache 并回写该 IP 的历史事件。</p>' +
+    h += districtBlock(v);
+    return h;
+  }
+  // 1.1.16：区县级归属补全入口。三家国际源、ip9 与本地离线库实测都拿不到区县，
+  // 所以无论该 IP 是否已经在线核验，都要能一键打开查询页并手工回填 ——
+  // 新 IP（尚未核验）恰恰最需要补区级时，反而不该没有入口。
+  // tool.hiofd.com/ip/ 的 /router/rest 带 k/t/x/r 反爬签名、免签名返回 444，
+  // 不是公开 API，因此只做「打开页面 + 复制 IP」，不做后台自动调用。
+  function districtBlock(v) {
+    v = v || {};
+    return '<div class="verify-box" style="margin-top:10px">' +
+      '<p class="hint" style="margin:0 0 8px">区县级归属：免费接口覆盖不全，自动补充通常为空。' +
+      '可先用「在线校验」到 tool.hiofd.com 查（自动复制 IP），把结果里的「区」填到下面保存；' +
+      '该站接口带反爬签名、不是公开 API，因此不做后台自动调用。' +
+      '也可以在设置里填一个自己的区级接口自动补全。</p>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">' +
+      '<button class="profile-btn" data-act="extcheck">在线校验（打开查询页并复制 IP）</button></div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">' +
       '<input id="districtInput" type="text" maxlength="40" placeholder="例如：蜀山区" ' +
       'value="' + esc(v.district || '') + '" style="flex:1;min-width:160px;background:var(--panel-2);' +
       'border:1px solid var(--line);border-radius:8px;padding:7px 9px;color:inherit">' +
       '<button class="profile-btn" data-act="district">保存区级信息</button></div></div>';
-    return h;
   }
   // 画像抽屉统一事件：IP 切换 / 返回整组 / 在线核验
   function bindDetailEvents(root, ip, groupHit) {
@@ -1873,6 +1908,24 @@
       if (back && groupHit) { openGroupProfile(groupHit); return; }
       var el = e.target.closest('.ip-item[data-ip]');
       if (el) { openDetail(el.getAttribute('data-ip'), groupHit); return; }
+      // 1.1.16：在线校验入口。复制 IP 后打开第三方查询页，人工核对再回填。
+      var ec = e.target.closest('[data-act="extcheck"]');
+      if (ec) {
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            // 1.1.16 真机回归三次修复：内嵌 WebView / 页面未聚焦时
+            // writeText() 会返回被拒绝的 Promise，try/catch 抓不到异步
+            // rejection，会污染成 unhandledrejection。显式吞掉即可，
+            // 功能上仍可手动复制，且查询页照常打开。
+            var cp = navigator.clipboard.writeText(ip);
+            if (cp && cp.catch) cp.catch(function () {});
+          }
+        } catch (x) { /* 内嵌 WebView 可能禁用剪贴板，仍可手动复制 */ }
+        var w = window.open('https://tool.hiofd.com/ip/', '_blank', 'noopener');
+        toast(w ? ('已复制 ' + ip + '，粘贴到查询框；查到的「区」填到下面保存')
+                : ('查询页：tool.hiofd.com/ip/，手动输入 ' + ip + ' 后把「区」填到下面'));
+        return;
+      }
       // 1.1.15：手工补充区级信息，写 geo_cache 并回写历史事件
       var di = e.target.closest('[data-act="district"]');
       if (di) {
@@ -1973,7 +2026,7 @@
           return '<div class="src-line"><span>' + tm(x.ts) + ' · ' + protoChip(x.proto) +
             ' · ' + esc(x.ip) + ' · ' +
             esc(VERDICT_NAME[x.verdict] || x.verdict || '记录') + ' · ' +
-            esc(x.action || x.path || '连接') + '</span><span>' + (x.port || '—') + '</span></div>';
+            esc(x.action || x.path || '连接') + '</span><span>' + portLabel(x.port, x.source) + '</span></div>';
         }).join('') || '<div class="empty">暂无连接记录</div>');
       $('detailBody').innerHTML = h;
       var box = $('groupIps');
@@ -2359,8 +2412,14 @@
   }
   function sw(key, label, hint) {
     var c = S.cfg[key] ? 'checked' : '';
-    return '<div class="field"><label>' + label + '<br><span style="color:var(--dim);font-size:11px">' +
-      hint + '</span></label><span class="switch"><input type="checkbox" data-k="' + key + '" ' + c + '><i></i></span></div>';
+    // 1.1.16：原实现里 input 是 0×0 且 opacity:0，可见滑块是不在 label 内的
+    // <i>，点它根本不会切换 checkbox —— 真机上所有开关都点不动。现在让
+    // label[for] 指向 input，配合 CSS 把 input 铺满整个 .switch 区域。
+    var id = 'sw_' + key;
+    return '<div class="field"><label for="' + id + '">' + label +
+      '<br><span style="color:var(--dim);font-size:11px">' +
+      hint + '</span></label><span class="switch"><input id="' + id +
+      '" type="checkbox" data-k="' + key + '" ' + c + '><i></i></span></div>';
   }
   function fld(key, label, type, hint, step) {
     return '<div class="field"><label>' + label + '</label><input type="' + (type || 'text') +
@@ -3278,6 +3337,15 @@
       ' · 端口敲门 ' + (sources && sources.knock_installed ? '已安装' : '未安装（预留）') +
       ' · 敲门网关 ' + (sources && sources.knock_app_enabled ? '已接入' : '未接入') + '</p>' + src +
       '</div>' +
+      '<div class="form-group"><h3>区级归属校验接口（可选）</h3>' +
+      '<p class="hint">三家国际源与本地离线库都不返回区县。这里可以填一个自己可用的 ' +
+      'JSON 接口，在线核验时自动取「区」写回该 IP 的历史记录。' +
+      'tool.hiofd.com 查询页能查到区县，但接口带反爬签名、不是公开 API，' +
+      '不内置自动调用；请用画像里的「在线校验」人工核对后回填。</p>' +
+      sw('geo_district_api_enabled', '启用自定义区级接口', '默认关闭；仅对境内且区县为空的 IP 请求') +
+      fld('geo_district_api', '接口 URL（用 {ip} 占位）', 'text', '例 https://your-api/ip?ip={ip}，仅允许 https') +
+      fld('geo_district_field', '区县字段路径', 'text', '例 data.district 或 district，支持点号层级') +
+      '</div>' +
       '<div style="display:flex;gap:10px;flex-wrap:wrap">' +
       '<button class="btn primary" id="btnSaveCfg">保存配置</button>' +
       '<button class="btn" id="btnReload">重载采集器</button>' +
@@ -3478,7 +3546,7 @@
         ['IP 地址', ip], ['归属地', loc || '未知'], ['范围', SCOPE_NAME[g.scope] || '未知'],
         ['坐标', (g.lat != null ? g.lat + ', ' + g.lng : '—')],
         ['累计访问', num(a.n) + ' 次'], ['首次 / 末次', tm(a.first_ts) + ' → ' + tm(a.last_ts)],
-        ['目标端口', i.port || '—'], ['来源通道', SRC_NAME[i.source] || i.source || '—'],
+        ['目标端口', portLabel(i.port, i.source)], ['来源通道', SRC_NAME[i.source] || i.source || '—'],
         ['最近判定', VERDICT_NAME[i.verdict] || i.verdict || '—'],
         ['访问协议', (PROTO_NAME[i.proto] || i.proto || '未识别') +
           (i.scheme_conf ? ' · ' + (SCHEME_CONF[i.scheme_conf] || i.scheme_conf) : '')],
@@ -3531,7 +3599,7 @@
         ((r.data.recent || []).slice(0, 20).map(function (x) {
           return '<div class="src-line"><span>' + tm(x.ts) + ' · ' + protoChip(x.proto) + ' · ' +
             esc(VERDICT_NAME[x.verdict] || x.verdict) + ' · ' + esc(x.action || x.path) +
-            '</span><span>' + (x.port || '—') + '</span></div>';
+            '</span><span>' + portLabel(x.port, x.source) + '</span></div>';
         }).join('') || '<div class="empty">无记录</div>');
       $('detailBody').innerHTML = h;
       bindDetailEvents($('detailBody'), ip, groupHit);

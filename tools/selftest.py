@@ -2177,16 +2177,17 @@ _dc29 = open(os.path.join(ROOT, "docs", "使用说明.md"), encoding="utf-8").re
 _rm29 = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
 _m29 = open(os.path.join(ROOT, "src", "manifest"), encoding="utf-8").read()
 
-check("版本 1.1.15 已同步到清单 / 后端 / 预览 / 文档",
-      gateway.VERSION == "1.1.15" and
-      "version                    = 1.1.15" in _m29 and
-      "version:'1.1.15'" in _p29 and
-      "**1.1.15（当前版本）**" in _ch29 and
-      "**1.1.15（当前版本）**" in _rd29 and
+check("版本 " + CUR + " 已同步到清单 / 后端 / 预览 / 文档",
+      gateway.VERSION == CUR and
+      ("version                    = " + CUR) in _m29 and
+      ("version:'" + CUR + "'") in _p29 and
+      ("**" + CUR + "（当前版本）**") in _ch29 and
+      ("**" + CUR + "（当前版本）**") in _rd29 and
       "### 1.1.15 新增了什么" in _dc29 and
-      "ipsense_1.1.15_all.fpk" in _rm29)
-check("CHANGELOG 1.1.15 只用三种 emoji",
-      not any(x in _ch29.split("**1.1.15（当前版本）**")[1].split("**1.1.14**")[0]
+      ("ipsense_" + CUR + "_all.fpk") in _rm29)
+_ch29_cur = _ch29.split("**" + CUR + "（当前版本）**")[1].split("**1.1.15**")[0]
+check("CHANGELOG " + CUR + " 只用三种 emoji",
+      not any(x in _ch29_cur
               for x in ("✨", "⌨️", "🧹", "📦", "🛡️", "📊", "🔧", "⚡")))
 
 # ① 境外长弧线中断
@@ -2194,9 +2195,10 @@ check("① 长弧：以本机经度为中心的 360° 连续窗口",
       "function worldCenteredBounds(home)" in _j29 and
       "function unwrapTo(lng, center)" in _j29 and
       "c - 180" in _j29 and "c + 180" in _j29)
-check("① 长弧：SDK 生成 -360 / 0 / +360 三份世界副本折线",
+check("① 长弧：SDK 折线收敛到合法经度窗口（1.1.16 真机修复）",
       "function worldSegs(pts)" in _j29 and
-      "[-360, 0, 360]" in _j29 and "g.sdkSegs" in _j29)
+      "((x + 180) % 360 + 360) % 360 - 180" in _j29 and
+      "[-360, 0, 360]" not in _j29 and "g.sdkSegs" in _j29)
 check("① 长弧：跨 seam 采样加密到 96 段",
       "Math.min(d.dist > 90 ? 96 : 64," in _j29)
 check("① 长弧：几何专项回归工具已入库",
@@ -2338,8 +2340,9 @@ check("⑧ 根 README / 详版 / 使用说明均加排障入口",
 check("预览页 mock 同步 1.1.15 新接口与字段",
       "api/diag/export" in _p29 and "api/geo/district" in _p29 and
       "geo_district_enabled" in _p29 and
-      "district:(j%2===0" in _p29 and "scope:'cn'" in _p29 and
-      "function R(d)" in _p29 and "text:function()" in _p29)
+      "district:" in _p29 and "scope:'cn'" in _p29 and
+      "function R(d)" in _p29 and "text:function()" in _p29 and
+      "geo_district_api_enabled:false" in _p29 and ",port:0" in _p29)
 check("只观测口径无回归：不封禁 / 不改防火墙 / 不自动处置",
       "不封禁 IP" in _sm29 and "不自动修改防火墙" in _sm29 and
       "只观测" in _j29)
@@ -2347,6 +2350,128 @@ check("历史能力无回归（1.1.14 / 1.1.13 / 1.1.11 / 1.1.8）",
       "KnockDirTailer" in _cl29 and "args: [args || {}]" in _j29 and
       "isolation:isolate" in _c29 and "map_provider" in _j29 and
       "def build_summary" in _sm29 and "openPickerCard" in _j29)
+
+print("\n=== 30. 1.1.16 真机回归六项修复 ===")
+_j30 = open(os.path.join(UI, "app.js"), encoding="utf-8").read()
+_c30 = open(os.path.join(UI, "style.css"), encoding="utf-8").read()
+_h30 = open(os.path.join(UI, "index.html"), encoding="utf-8").read()
+_cl30 = open(os.path.join(SERVER, "collector.py"), encoding="utf-8").read()
+_st30 = open(os.path.join(SERVER, "store.py"), encoding="utf-8").read()
+_gs30 = open(os.path.join(SERVER, "geosource.py"), encoding="utf-8").read()
+_se30 = open(os.path.join(SERVER, "settings.py"), encoding="utf-8").read()
+_gw30 = open(os.path.join(SERVER, "gateway.py"), encoding="utf-8").read()
+_p30 = open(os.path.join(ROOT, "tools", "make_preview.py"), encoding="utf-8").read()
+_ch30 = open(os.path.join(ROOT, "docs", "CHANGELOG.md"), encoding="utf-8").read()
+_rd30 = open(os.path.join(ROOT, "docs", "README.md"), encoding="utf-8").read()
+_dc30 = open(os.path.join(ROOT, "docs", "使用说明.md"), encoding="utf-8").read()
+_tg30 = open(os.path.join(ROOT, "docs", "排障指南.md"), encoding="utf-8").read()
+_rm30 = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
+_m30 = open(os.path.join(ROOT, "src", "manifest"), encoding="utf-8").read()
+
+# ① 真机弧线
+check("① sdkLat 必须是顶层函数（真机 SDK 路径作用域回归）",
+      "\n  function sdkLat(lat, lng)" in _j30 and
+      "\n    function sdkLat(lat, lng)" not in _j30)
+check("① SDK 折线不再产出 ±360 非法经度",
+      "[-360, 0, 360]" not in _j30 and
+      "((x + 180) % 360 + 360) % 360 - 180" in _j30)
+check("① SDK 坐标钳制兜底已接上 paths",
+      "function sdkLat(lat, lng)" in _j30 and "sdkLat(p.lat, p.lng)" in _j30)
+check("① Canvas 本机中心连续窗口保留",
+      "function worldCenteredBounds(home)" in _j30 and "c - 180" in _j30)
+check("① 几何专项回归工具已入库",
+      os.path.isfile(os.path.join(ROOT, "tools", "check_116_geometry.mjs")))
+
+# ② 设置开关
+check("② sw() 用 label[for] 绑定 input",
+      "var id = 'sw_' + key" in _j30 and 'for="' in _j30)
+check("② CSS input 铺满 .switch 且滑块不吃点击",
+      "position:absolute;inset:0;width:100%;height:100%" in _c30 and
+      "pointer-events:none" in _c30)
+
+# ③ 端口
+check("③ 新增 web_log_port 只认日志显式端口",
+      "def web_log_port(referer, line)" in _cl30 and
+      "return 0" in _cl30 and "web_log_port(referer, line)" in _cl30)
+check("③ Referer 不再被用来推断目标端口（真机二次修复）",
+      "Referer 语义上就不能用来推断" in _cl30 and
+      '^https?://[^/' not in _cl30)
+check("③ local_web 不再拿应用自身端口冒充",
+      'int(self.cfg.get("web_port", 5666))' not in _cl30)
+check("③ 前端统一 portLabel 显示未记录",
+      "function portLabel(p, src)" in _j30 and "未记录" in _j30)
+check("③ 升级幂等订正历史端口",
+      "def normalize_web_ports" in _st30 and "web_port_normalized_116" in _st30)
+check("③ 启动链路调用端口订正",
+      "normalize_web_ports" in _gw30)
+check("③ 预览 mock 端口同步为 0", ",port:0" in _p30)
+
+# ④ 离线库重庆误判
+check("④ geo_local_fix 表与读写方法齐备",
+      "CREATE TABLE IF NOT EXISTS geo_local_fix" in _st30 and
+      "def local_fix" in _st30 and "def put_local_fix" in _st30)
+check("④ verify 优先取订正值，不再把重庆带回本地票",
+      "self.store.local_fix(ip)" in _gs30 and
+      "if fix:" in _gs30)
+check("④ 多数派与离线库冲突时固化裁决",
+      "put_local_fix(ip, dict(geo, ip=ip))" in _gs30)
+check("④ 归属回写后清聚合缓存，去掉假重庆气泡",
+      "self.clear_cache()" in _st30)
+check("④ 升级幂等同步历史 local_* 残留",
+      "def normalize_local_geo" in _st30 and
+      "local_geo_normalized_116" in _st30 and
+      "normalize_local_geo" in _gw30)
+
+# ⑤ 区级归属 / 在线校验
+check("⑤ 画像提供在线校验入口并复制 IP",
+      'data-act="extcheck"' in _j30 and "tool.hiofd.com/ip/" in _j30 and
+      "navigator.clipboard" in _j30)
+check("⑤ 剪贴板 Promise 显式吞掉 rejection（真机 WebView 回归）",
+      "cp.catch(function () {})" in _j30)
+check("⑤ 区县手工回填链路保留",
+      'data-act="district"' in _j30 and "api/geo/district" in _j30)
+check("⑤ 设置页开放自定义区级接口",
+      "geo_district_api_enabled" in _j30 and "{ip}" in _j30)
+check("⑤ 配置默认值与 BOOL_KEYS 同步",
+      '"geo_district_api_enabled": False' in _se30 and
+      _se30.count("geo_district_api_enabled") >= 2)
+check("⑤ 自定义源有 SSRF 安全边界",
+      "def fetch_custom_district" in _gs30 and
+      "p.scheme != \"https\"" in _gs30 and
+      "169.254.169.254" in _gs30 and "192.168." in _gs30)
+check("⑤ 后端冒烟工具已入库",
+      os.path.isfile(os.path.join(ROOT, "tools", "smoke_116_store.py")))
+
+# 1.1.16 预览页热修：区级补全入口与有状态 mock
+check("⑤ 未在线核验的 IP 也有区级补全入口",
+      "function districtBlock(" in _j30 and "districtBlock(null)" in _j30 and
+      "districtBlock(v)" in _j30)
+check("⑤ 预览 mock 的 /api/ip 带区级状态并可回填",
+      "var ipGeo=" in _p30 and "verification:ipGeo" in _p30 and
+      "ipGeo.district=nd" in _p30 and "window.fetch=function(u,opt)" in _p30)
+check("⑤ 预览 mock 境外 IP 不再硬塞中国区县",
+      "(j%3===0?''" in _p30)
+check("⑤ 1.1.16 预览验收脚本已入库",
+      os.path.isfile(os.path.join(ROOT, "tools", "verify_116_preview.py")))
+
+# 版本 / 文档 / 口径
+check("版本 " + CUR + " 已同步到清单与首页",
+      ("version                    = " + CUR) in _m30 and CUR in _h30)
+check("CHANGELOG / 详版 / 使用说明均有 1.1.16 章节",
+      "**1.1.16（当前版本）**" in _ch30 and
+      "**1.1.16（当前版本）**" in _rd30 and
+      "### 1.1.16 新增了什么" in _dc30)
+check("排障指南订正了 SDK 世界副本口径",
+      "[-180,180]" in _tg30 and "±360" in _tg30)
+check("根 README 安装表已滚动",
+      "ipsense_1.1.16_all.fpk" in _rm30 and
+      "ipsense_1.1.16_arm.fpk" in _rm30)
+check("只观测口径无回归",
+      "只观测" in _j30 and "不封禁" in _rd30)
+check("1.1.15 历史事实未被改写",
+      "### 1.1.15 新增了什么" in _dc30 and
+      "**1.1.15**" in _ch30)
+
 
 print("\n=== 结果：%d 项通过 / %d 项失败 ===" % (ok, len(fail)))
 if fail:

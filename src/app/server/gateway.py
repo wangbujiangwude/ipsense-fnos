@@ -18,7 +18,7 @@ import urllib.parse
 import traceback
 
 APP_NAME = "ipsense"
-VERSION = "1.1.15"
+VERSION = "1.1.16"
 PREFIX = "/app/" + APP_NAME
 APP_DEST = os.environ.get("TRIM_APPDEST", "/var/apps/%s/target" % APP_NAME)
 VAR_DIR = os.environ.get("TRIM_PKGVAR") or "/vol1/@appdata/%s" % APP_NAME
@@ -83,6 +83,13 @@ class App(object):
             log("normalize_events: %s" % json.dumps(_norm, ensure_ascii=False))
         except Exception as e:
             log("normalize_events error: %s" % traceback.format_exc())
+        # 1.1.16：升级时一次性订正两类历史脏值（幂等，meta 标记，只跑一次）。
+        try:
+            log("normalize_web_ports: %d" % self.store.normalize_web_ports(
+                int(self.settings.get("web_port", 5666) or 5666)))
+            log("normalize_local_geo: %d" % self.store.normalize_local_geo())
+        except Exception:
+            log("normalize_116 error: %s" % traceback.format_exc())
         self.verifier = GeoVerifier(self.store, self.geo, self.settings, log)
         self.collector = None
         self.started = time.time()
