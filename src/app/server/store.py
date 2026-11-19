@@ -477,8 +477,10 @@ class Store(object):
             "info": head,
             "agg": agg,
             "recent": recent,
+            # 1.1.20：表格改为合并展示后，路径明细统一在画像里看，
+            # TOP 8 太窄，放宽到 TOP 20（窗口内去重路径总数见 agg.paths）。
             "top_paths": [{"path": k, "n": v} for k, v in
-                          sorted(cp.items(), key=lambda x: -x[1])[:8]],
+                          sorted(cp.items(), key=lambda x: -x[1])[:20]],
             "protocols": [{"k": k, "n": v, "manual": cmanual.get(k, 0)}
                           for k, v in sorted(cproto.items(), key=lambda x: -x[1])],
             "verdicts": [{"k": k, "n": v} for k, v in
@@ -542,8 +544,9 @@ class Store(object):
             "ips": sorted(per_ip.values(), key=lambda x: -x["n"]),
             "total": sm["n"], "first_ts": sm["first_ts"], "last_ts": sm["last_ts"],
             "recent": recent,
+            # 1.1.20：与单 IP 画像一致，放宽到 TOP 20
             "top_paths": [{"path": k, "n": v} for k, v in
-                          sorted(cpath.items(), key=lambda x: -x[1])[:6]],
+                          sorted(cpath.items(), key=lambda x: -x[1])[:20]],
             "window": {"rows": len(rows), "limit": win,
                        "truncated": sm["n"] > len(rows)},
         }

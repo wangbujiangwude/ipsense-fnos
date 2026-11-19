@@ -53,47 +53,51 @@
       <button class="link" id="bannerAction">去设置</button>
     </div>
 
-    <div class="map-grid">
-      <section class="card map-card">
-        <div class="card-head">
-          <div><h2>境外来源 · 全球视图</h2><p>连线颜色按连接频率由冷到热 · 按国家合并 · 点击圆点打开 IP 来源画像</p></div>
-          <div class="head-right"><span class="tag tag-red">境外</span><span class="legend"><i class="lg-red"></i>访问 <i class="lg-dot"></i>本机</span></div>
+    <!-- 1.1.21：三图合一。境外弧线 / 境内弧线 / 全球气泡各自保留原有容器、SDK 实例与
+         绘制逻辑，统一叠进一张卡片的 .map-stage；右上角 segmented 随时切换模式。
+         三个图层始终有真实宽高（SDK 初始化要求容器尺寸 > 0，display:none 会白屏），
+         只切 active 的透明度与层级，不隐藏、不重建地图实例。 -->
+    <section class="card geodist map-unified" id="geoCard">
+      <div class="card-head">
+        <div>
+          <h2 id="mapModeTitle">境外来源 · 全球视图</h2>
+          <p id="mapModeDesc">连线颜色按连接频率由冷到热 · 按国家合并 · 点击圆点打开 IP 来源画像</p>
         </div>
-        <div class="map-wrap" id="worldWrap">
+        <div class="head-right map-head-right">
+          <span class="legend" id="mapModeLegend"><i class="lg-red" id="mapModeLegendLine"></i>访问 <i class="lg-dot"></i>本机</span>
+          <span class="tag tag-red" id="mapModeTag">境外</span>
+          <div class="segmented map-mode-seg" id="mapModeSeg" role="group" aria-label="地图模式切换">
+            <button type="button" data-mode="world" class="on"
+              data-title="境外来源 · 全球视图"
+              data-desc="连线颜色按连接频率由冷到热 · 按国家合并 · 点击圆点打开 IP 来源画像"
+              data-tag="境外" data-tagcls="tag-red">境外连线</button>
+            <button type="button" data-mode="cn"
+              data-title="境内来源 · 中国视图"
+              data-desc="连线颜色按连接频率由冷到热 · 按省份合并 · 点击圆点打开 IP 来源画像"
+              data-tag="境内" data-tagcls="tag-green">境内连线</button>
+            <button type="button" data-mode="geo"
+              data-title="全球 IP 来源分布"
+              data-desc="境内与境外来源统一落在一张世界地图上 · 气泡大小与颜色表示访问次数 · 点击气泡查看该地区来源明细"
+              data-tag="全球" data-tagcls="tag-blue">全球分布</button>
+          </div>
+        </div>
+      </div>
+      <div class="map-stage" id="mapStage">
+        <div class="map-wrap map-layer active" id="worldWrap">
           <div id="worldMap" class="tmap"></div>
           <canvas id="worldCanvas" class="fallback"></canvas>
           <div class="map-note" id="worldNote"></div>
           <div class="map-stat" id="worldStat">—</div>
           <div class="heat-legend" id="worldHeat"></div>
         </div>
-      </section>
-      <section class="card map-card">
-        <div class="card-head">
-          <div><h2>境内来源 · 中国视图</h2><p>连线颜色按连接频率由冷到热 · 按省份合并 · 点击圆点打开 IP 来源画像</p></div>
-          <div class="head-right"><span class="tag tag-green">境内</span><span class="legend"><i class="lg-green"></i>访问 <i class="lg-dot"></i>本机</span></div>
-        </div>
-        <div class="map-wrap" id="cnWrap">
+        <div class="map-wrap map-layer" id="cnWrap">
           <div id="cnMap" class="tmap"></div>
           <canvas id="cnCanvas" class="fallback"></canvas>
           <div class="map-note" id="cnNote"></div>
           <div class="map-stat" id="cnStat">—</div>
           <div class="heat-legend" id="cnHeat"></div>
         </div>
-      </section>
-    </div>
-
-    <!-- 1.1.2：固定全球视图。境内 + 境外来源统一按国家 / 地区聚合后落在一张世界地图上，
-         去掉境内 / 全球切换与右侧重复排名；统计与排名合并到下方「访问统计与排名」。 -->
-    <section class="card geodist" id="geoCard">
-      <div class="card-head">
-        <div>
-          <h2>全球 IP 来源分布</h2>
-          <p>境内与境外来源统一落在一张世界地图上 · 气泡大小与颜色表示访问次数 · 点击气泡查看该地区来源明细</p>
-        </div>
-        <div class="head-right"><span class="tag tag-blue">全球</span></div>
-      </div>
-      <div class="geo-grid">
-        <div class="geo-map-wrap" id="geoWrap">
+        <div class="geo-map-wrap map-layer" id="geoWrap">
           <div id="geoMap" class="tmap"></div>
           <canvas id="geoCanvas" class="fallback"></canvas>
           <div class="geo-legend" id="geoLegend"></div>
@@ -182,7 +186,7 @@
 
     <section class="card records">
       <div class="card-head">
-        <div><h2>IP 来源记录</h2><p>点击任意一行查看该 IP 的完整画像</p></div>
+        <div><h2>IP 来源记录</h2><p>同秒同 IP 的多个请求合并为一行，只记录动作；路径明细点开画像查看</p></div>
         <div class="filters">
           <select id="fScope"><option value="">全部范围</option><option value="cn">境内</option><option value="overseas">境外</option><option value="private">内网</option><option value="lan">局域网设备</option></select>
           <select id="fVerdict"><option value="">全部判定</option><option value="normal">正常访问</option><option value="scan">扫描探测</option><option value="attack">认证攻击</option><option value="knock">端口敲门</option></select>
@@ -194,7 +198,7 @@
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>时间</th><th>来源</th><th>IP 地址</th><th>归属地</th><th>范围</th><th>协议</th><th>端口</th><th>判定</th><th>动作 / 路径</th></tr></thead>
+          <thead><tr><th>时间</th><th>来源</th><th>IP 地址</th><th>归属地</th><th>范围</th><th>协议</th><th>端口</th><th>判定</th><th title="同秒同 IP 的多个请求已合并；路径明细点开画像查看">动作</th></tr></thead>
           <tbody id="recBody"><tr><td colspan="9" class="empty">加载中…</td></tr></tbody>
         </table>
       </div>
@@ -204,7 +208,7 @@
 
   <footer>
     <span id="footMap">IP 动态感知 · 离线归属库 ip2region · 底图服务：—</span>
-    <span id="footInfo">数据源：本机日志 / fnOS 结构化审计 / SSH 轮转日志 / 路由器日志 / 端口敲门 · 归属：本地离线库 + 3 家在线源交叉校验 · 协议 / 来路 / 受访页 / 入口页来自 Nginx combined 日志 · 1.1.19 起投喂二维码单独弹出并放大；1.1.18 起筛选范围下次打开保持、目标端口按日志证据多级补录、在线校验自动复制 IP 并支持站内查询；设置最底部可一键导出运行报错与运行日志诊断包，方便交给 AI 定位问题</span>
+    <span id="footInfo">数据源：本机日志 / fnOS 结构化审计 / SSH 轮转日志 / 路由器日志 / 端口敲门 · 归属：本地离线库 + 3 家在线源交叉校验 · 协议 / 来路 / 受访页 / 入口页来自 Nginx combined 日志 · 1.1.21 起三张地图合并为一张卡片，右上角可切换境外连线 / 境内连线 / 全球分布；1.1.20 起 IP 来源记录同秒同 IP 合并为一行、路径明细点开画像查看；1.1.19 起投喂二维码单独弹出并放大；1.1.18 起筛选范围下次打开保持、目标端口按日志证据多级补录、在线校验自动复制 IP 并支持站内查询；设置最底部可一键导出运行报错与运行日志诊断包，方便交给 AI 定位问题</span>
   </footer>
 </div>
 

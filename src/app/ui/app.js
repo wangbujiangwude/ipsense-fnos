@@ -257,7 +257,7 @@
     return { list: [], merged: 0, skipped: 0, near: 0, nearPts: [], cross: 0 };
   }
   var S = {
-    range: '24h', page: 1, size: 20, trendKey: 'all', liveScope: '',
+    range: '24h', page: 1, size: 50, trendKey: 'all', liveScope: '',
     lastId: 0, hotspots: [], home: { lat: 22.5431, lng: 114.0579, label: '本机' },
     mapConfigured: false, cfg: {}, mapProvider: 'tencent', tmapReady: false, tmapTried: false,
     mapKeysDraft: null, mapCustom: null, selProvider: 'tencent',
@@ -278,6 +278,8 @@
     // 1.1.2：全球 IP 分布 / Web 访问分析
     // 1.1.2：地域图固定全球，scope=all 一次返回境内 + 境外全部来源
     geoScope: 'all', geoData: null, webData: null,
+    // 1.1.21：三图合一后当前显示的地图模式（world / cn / geo）
+    mapMode: 'world',
     geoMap: null, geoMarks: null, geoMarkIndex: {}, geoHits: [],
     // 1.1.3：五卡放大面板状态（来源矩形用于关闭时无缝收回）
     zoomOn: false, zoomDim: '', zoomName: '', zoomFrom: null,
@@ -726,6 +728,66 @@
     $('zoomDetail').innerHTML = h;
   }
 
+  // ---- 1.1.21 · 三图合一：右上角的三种地图模式 ----
+  // 三张地图的容器、SDK 实例与绘制逻辑全部保留，只是叠在同一块 .map-stage 里。
+  // 关键约束：TMap SDK 初始化时容器必须有真实宽高，display:none 会抛异常白屏，
+  // 所以非活动层只降透明度 + 关指针事件，绝不隐藏、绝不重建实例。
+  var MAP_MODE_LAYERS = { world: 'worldWrap', cn: 'cnWrap', geo: 'geoWrap' };
+  function setMapMode(mode, save) {
+    if (!MAP_MODE_LAYERS[mode]) mode = 'world';
+    S.mapMode = mode;
+    var btn = null;
+    Array.prototype.forEach.call($('mapModeSeg').querySelectorAll('button[data-mode]'), function (b) {
+      var on = b.getAttribute('data-mode') === mode;
+      if (on) b.classList.add('on'); else b.classList.remove('on');
+      if (on) btn = b;
+    });
+    if (btn) {
+      $('mapModeTitle').textContent = btn.getAttribute('data-title') || '';
+      $('mapModeDesc').textContent = btn.getAttribute('data-desc') || '';
+      var tag = $('mapModeTag');
+      tag.textContent = btn.getAttribute('data-tag') || '';
+      tag.className = 'tag ' + (btn.getAttribute('data-tagcls') || 'tag-blue');
+      var lg = $('mapModeLegend'), line = $('mapModeLegendLine');
+      lg.style.display = mode === 'geo' ? 'none' : '';
+      line.className = mode === 'cn' ? 'lg-green' : 'lg-red';
+    }
+    Object.keys(MAP_MODE_LAYERS).forEach(function (k) {
+      var el = $(MAP_MODE_LAYERS[k]);
+      if (!el) return;
+      if (k === mode) el.classList.add('active'); else el.classList.remove('active');
+    });
+    // 供自动化验收读取当前模式
+    try { document.body.dataset.mapMode = mode; } catch (e) {}
+    // 切过去之后补一次重绘 / resize：部分浏览器会暂停透明层的渲染帧
+    if (mode === 'geo') {
+      try { if (S.geoMap) S.geoMap.resize(); } catch (e) {}
+      drawGeo();
+    } else {
+      try {
+        var m = mode === 'cn' ? S.cn : S.world;
+        if (S.tmapReady && m && m.resize) m.resize();
+      } catch (e) {}
+      requestMapDraw(true);
+    }
+    if (save !== false) writeUiPref({ mapMode: mode });
+  }
+  function bindMapMode() {
+    var seg = $('mapModeSeg');
+    if (!seg) return;
+    // 1.1.5 起不依赖 Element.closest：部分内嵌 WebView 不支持，改用父链遍历
+    seg.onclick = function (e) {
+      var t = e.target, b = null;
+      while (t && t !== seg) {
+        if (t.getAttribute && t.getAttribute('data-mode')) { b = t; break; }
+        t = t.parentNode;
+      }
+      if (!b) return;
+      setMapMode(b.getAttribute('data-mode'), true);
+    };
+    setMapMode(S.mapMode, false);
+  }
+
   // ---- 1.1.2：全球 IP 来源分布（固定全球视图） ----
   // 合规：只搬运截图的信息结构（数量色阶、详情下钻），不自绘国界 / 省界轮廓。
   // 有密钥时复用合规底图 + 数量气泡；无密钥时降级为不绘任何边界的
@@ -930,14 +992,68 @@
   }
 
   // ---- 记录表 ----
+  // 1.1.20：打开一个应用（如 /fnzerror）会在同一秒并发发出一批
+  // /fnzerror/api/... 请求，combined 日志逐条落库，于是表格里除路径外所有字段
+  // 都相同，被同一 IP 刷屏。这里把「同秒 + 同 IP + 相同来源/归属/范围/协议/
+  // 端口/判定/动作」的记录合并为一行，只记录动作，并标注合并条数与一级应用
+  // 前缀；路径明细不再逐行铺开，统一到 IP 来源画像「路径明细 · 高频路径」看
+  // —— 两处原本都在回答「这个 IP 访问过哪些路径」，功能重复。
+  // 注意：只合并当前页可见记录，分页与总条数仍按原始事件数，导出 CSV 也仍是
+  // 逐条原始明细，取证用途不受影响。
+  function pathRoot(p) {
+    var s = String(p || '').split('?')[0];
+    var m = /^\/([^/]+)/.exec(s);
+    return m ? '/' + m[1] : (s || '—');
+  }
+  function recGroupKey(r) {
+    return [
+      Math.floor(Number(r.ts) || 0), r.ip, r.source,
+      r.country, r.province, r.city, r.district,
+      r.scope, r.proto, r.status, r.port, r.port_src,
+      r.verdict, r.action
+    ].join('|');
+  }
+  function mergeRecords(rows) {
+    var out = [], idx = {};
+    (rows || []).forEach(function (r) {
+      var k = recGroupKey(r);
+      if (!Object.prototype.hasOwnProperty.call(idx, k)) {
+        idx[k] = out.length;
+        var g = {}, key;
+        for (key in r) {
+          if (Object.prototype.hasOwnProperty.call(r, key)) g[key] = r[key];
+        }
+        g._n = 1; g._paths = {}; g._roots = {};
+        if (r.path) { g._paths[r.path] = 1; g._roots[pathRoot(r.path)] = 1; }
+        out.push(g);
+      } else {
+        var cur = out[idx[k]];
+        cur._n++;
+        if (r.path) { cur._paths[r.path] = 1; cur._roots[pathRoot(r.path)] = 1; }
+      }
+    });
+    out.forEach(function (g) {
+      var roots = Object.keys(g._roots);
+      g._root = roots.length === 1 ? roots[0] :
+        (roots.length ? roots[0] + ' 等' : '—');
+      g._pathN = Object.keys(g._paths).length;
+    });
+    return out;
+  }
   function renderRecords(data) {
     var body = $('recBody');
+    var groups = [];
     if (!data.rows || !data.rows.length) {
       body.innerHTML = '<tr><td colspan="9" class="empty">没有匹配的记录</td></tr>';
     } else {
-      body.innerHTML = data.rows.map(function (r) {
+      groups = mergeRecords(data.rows);
+      body.innerHTML = groups.map(function (r) {
         var loc = [r.country, r.province, r.city, r.district].filter(function (x) { return x && x !== '0'; }).join(' · ') || '—';
-        var act = r.path ? esc(r.path) : esc(r.action);
+        var act = esc(r.action || VERDICT_NAME[r.verdict] || '记录');
+        var sub = '<span class="act-sub">' + esc(r._root) + ' · ' +
+          (r._n > 1 ? (r._n + ' 个请求已合并（' + r._pathN + ' 条路径）') :
+            (r._pathN + ' 条路径')) +
+          ' · 点行看路径明细</span>';
         return '<tr data-ip="' + esc(r.ip) + '">' +
           '<td>' + tm(r.ts) + '</td>' +
           '<td>' + esc(SRC_NAME[r.source] || r.source) + '</td>' +
@@ -947,10 +1063,11 @@
           '<td>' + protoChip(r.proto) + (r.status ? ' <small style="color:var(--dim)">' + r.status + '</small>' : '') + '</td>' +
           '<td title="' + esc(portHint(r.port_src)) + '">' + portLabel(r.port, r.source, r.port_src) + '</td>' +
           '<td><span class="badge ' + esc(r.verdict) + '">' + esc(VERDICT_NAME[r.verdict] || '记录') + '</span></td>' +
-          '<td><span class="path" title="' + esc(r.action) + '">' + act + '</span></td></tr>';
+          '<td title="点击查看该 IP 的路径明细"><span class="act-main">' + act + '</span>' + sub + '</td></tr>';
       }).join('');
     }
-    $('recTotal').textContent = '共 ' + num(data.total) + ' 条';
+    $('recTotal').textContent = '共 ' + num(data.total) + ' 条' +
+      (groups.length ? ' · 本页合并为 ' + groups.length + ' 行' : '');
     var pages = Math.max(1, Math.ceil(data.total / data.size));
     $('recPage').textContent = data.page + ' / ' + pages;
     $('btnPrev').disabled = data.page <= 1;
@@ -1994,11 +2111,21 @@
     return '<p class="detail-ip">' + esc(big) + '</p>' +
       '<p class="hint" style="color:var(--dim);font-size:12px">' + esc(sub) + '</p>';
   }
-  function pathBlock(list) {
-    return (list || []).length ? list.map(function (p) {
-      return '<div class="src-line"><span style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
-        esc(p.path) + '</span><span>' + num(p.n) + ' 次</span></div>';
-    }).join('') : '<div class="empty">无路径记录</div>';
+  // 1.1.20：表格不再逐行铺路径，这里就是查看路径明细的正式入口 ——
+  // 完整路径不截断（长路径换行显示）、点击可复制、给出不同路径总数。
+  function pathBlock(list, total) {
+    var items = list || [];
+    if (!items.length) return '<div class="empty">无路径记录</div>';
+    var head = total ? '<p class="hint" style="margin:0 0 8px">最近窗口内共 <b>' +
+      num(total) + '</b> 条不同路径' +
+      (total > items.length ? '，按次数显示前 ' + items.length + ' 条' : '') +
+      '；点击任意路径可复制。</p>' : '';
+    return head + '<div class="paths-full">' + items.map(function (p) {
+      var full = esc(p.path);
+      return '<div class="path-row" data-copy="' + full + '" title="' + full + '">' +
+        '<span class="path-full">' + full + '</span>' +
+        '<span class="path-n">' + num(p.n) + ' 次</span></div>';
+    }).join('') + '</div>';
   }
   function bindIpSwitches(root, hit) {
     if (!root) return;
@@ -2291,7 +2418,9 @@
       h += '<h3 style="font-size:13px;margin:18px 0 8px">来源 IP 明细（点击查看单 IP 画像）</h3>' +
         '<div id="groupIps">' + (ms.map(function (m) { return ipItem(m); }).join('') ||
           '<div class="empty">无 IP 明细</div>') + '</div>';
-      h += '<h3 style="font-size:13px;margin:18px 0 8px">高频路径</h3>' + pathBlock(g.top_paths);
+      h += '<h3 style="font-size:13px;margin:18px 0 8px">路径明细 · 高频路径</h3>' +
+        '<p class="hint" style="margin:0 0 8px">表格已把同秒同 IP 的请求合并，这里查看该来源点的路径明细。</p>' +
+        pathBlock(g.top_paths);
       h += '<h3 style="font-size:13px;margin:18px 0 8px">归属核验 · 多源交叉</h3>' +
         '<div class="verify-box"><p class="hint" style="margin:0">本圆点合并了 ' +
         ms.length + ' 个 IP。点上方任意 IP 可查看该 IP 的多源核验结果：' +
@@ -3941,8 +4070,9 @@
             '</span><span>' + num(x.n) + ' 次</span></div>';
         }).join('') : '<div class="empty">无 UA 记录</div>');
       h += verifyBlock(ip, r.verification);
-      h += '<h3 style="font-size:13px;margin:18px 0 8px">高频路径</h3>' +
-        pathBlock(r.data.top_paths);
+      h += '<h3 style="font-size:13px;margin:18px 0 8px">路径明细 · 高频路径</h3>' +
+        '<p class="hint" style="margin:0 0 8px">表格已把同秒同 IP 的请求合并，这里查看该 IP 的完整路径。</p>' +
+        pathBlock(r.data.top_paths, a.paths);
       h += '<h3 style="font-size:13px;margin:18px 0 8px">最近 20 条动作</h3>' +
         ((r.data.recent || []).slice(0, 20).map(function (x) {
           return '<div class="src-line"><span>' + tm(x.ts) + ' · ' + protoChip(x.proto) + ' · ' +
@@ -3997,6 +4127,8 @@
       if (hit) el.value = v;
     });
     S.liveScope = $('liveScope').value || '';
+    // 1.1.21：地图模式与筛选设定同一份偏好，下次打开保持上次选的那张图
+    if (p.mapMode) setMapMode(p.mapMode, false);
     if (p.range) {
       S.range = p.range;
       Array.prototype.forEach.call($('rangeSeg').querySelectorAll('button[data-r]'), function (b) {
@@ -4041,6 +4173,7 @@
 
   function bind() {
     bindCanvasPicks();
+    bindMapMode();
     // 1.0.12：设置 / 画像抽屉与放大面板都是模态，滚轮不能穿透去缩放底下的地图，
     // 所以注册在 window 捕获阶段且早于地图 SDK，配合 passive:false 才能 preventDefault；
     // stopImmediatePropagation 同时挡住 SDK 挂在 window/document 上的滚轮手势。
@@ -4178,12 +4311,15 @@
       // 点遮罩空白处或图片外的舞台区域都收起；点二维码本身不收
       if (e.target === this || e.target.classList.contains('sponsor-stage')) closeSponsor();
     };
-    Array.prototype.forEach.call(document.querySelectorAll('[data-copy]'), function (b) {
-      b.onclick = function () {
-        copyTextRobust(b.getAttribute('data-copy'), function (ok) {
-          toast(ok ? '已复制' : '复制未成功，请手动选取');
-        });
-      };
+    // 1.1.20：改成事件委托，动态插入画像的「路径明细」行也能点击复制；
+    // 关于弹窗里的群号 / GitHub 链接复用同一套 [data-copy]。
+    document.addEventListener('click', function (e) {
+      var el = e.target;
+      var b = el && el.closest ? el.closest('[data-copy]') : null;
+      if (!b) return;
+      copyTextRobust(b.getAttribute('data-copy'), function (ok) {
+        toast(ok ? '已复制' : '复制未成功，请手动选取');
+      });
     });
     $('bannerAction').onclick = function () {
       if (this.getAttribute('data-act') === 'retry') {

@@ -215,25 +215,25 @@ window.addEventListener('error',function(e){
   var diagText='IP 动态感知（ipsense）· 运行日志诊断包（离线预览）\n' +
     '生成时间：2026-11-19 00:00:00\n' +
     '说明：本文件已自动脱敏。地图 KEY / 令牌 / 口令已抹除；来访 IP 只保留前两段。\n\n' +
-    '1. 环境与应用状态\n  版本：1.1.19 · 运行中 · 数据源 3 路\n\n' +
+    '1. 环境与应用状态\n  版本：1.1.21 · 运行中 · 数据源 3 路\n\n' +
     '2. 主运行日志（尾部）\n  2026-11-19 00:00:01 INFO collector 已启动\n\n' +
     '3. 数据源状态\n  本机 SSH 已读取 · 本机 Web 已读取 · 路由器 syslog 文件不存在\n\n' +
-    '6.1 前端运行时报错（1.1.19，最近 100 条）\n' +
+    '6.1 前端运行时报错（1.1.21，最近 100 条）\n' +
     '  001 底图未显示：高德 SDK 未就绪 · map_sdk · KEY 无效\n';
-  // 1.1.19：运行时报错离线样本。预览页不连后端，POST 上报与查询都在这里闭环，
+  // 1.1.21：运行时报错离线样本。预览页不连后端，POST 上报与查询都在这里闭环，
   // 验收脚本可真实触发一个 JS 异常，再看它是否被采集并进入导出文本。
   var rtErrors=[
     {ts:now-120,kind:'map_sdk',level:'error',
      msg:'底图未显示：高德 SDK 未就绪：KEY 无效、未绑定 Web 端 (JS API)',
      src:'webapi.amap.com',provider:'amap',host:'webapi.amap.com',
-     mapState:'error',pill:'运行中 · 3 路数据源',ver:'1.1.19',count:1,stack:''},
+     mapState:'error',pill:'运行中 · 3 路数据源',ver:'1.1.21',count:1,stack:''},
     {ts:now-60,kind:'resource',level:'error',
      msg:'资源加载失败：https://webapi.amap.com/maps?<参数名:v,callback>',
      src:'https://webapi.amap.com/maps?<参数名:v,callback>',
      tag:'script',count:1,stack:''}
   ];
   var rtExportText='IP 动态感知（ipsense）· 运行时报错导出（离线预览）\n' +
-    '生成时间：2026-11-19 00:00:00\n应用版本：1.1.19\n' +
+    '生成时间：2026-11-19 00:00:00\n应用版本：1.1.21\n' +
     '[1] 概览\n  落盘记录总数 2 条\n\n' +
     '[2] 地图 SDK 专项（用户最常反馈的「底图没加载」）\n' +
     '  01 高德 SDK 未就绪：KEY 无效、未绑定 Web 端 (JS API)\n\n' +
@@ -246,7 +246,7 @@ window.addEventListener('error',function(e){
   var live=[],rows=[];
   for(var j=0;j<24;j++){
     var ip=(j%3===0?'45.155.205.'+(j+10):(j%3===1?'218.106.90.'+(j+100):'192.168.3.'+(j+20)));
-    // 1.1.19：端口按证据链补录并带 port_src。覆盖五种来源 + 一种「未记录」，
+    // 1.1.21：端口按证据链补录并带 port_src。覆盖五种来源 + 一种「未记录」，
     // 其中 referer 读出的 5666 用于验收「有来源就不隐藏」的 portLabel 修复。
     var pc=j%6, p=0, psrc='';
     if(pc===0){p=8443;psrc='log_tail';}
@@ -270,6 +270,25 @@ window.addEventListener('error',function(e){
       proto:e.proto,scheme_conf:e.scheme_conf,method:e.method,status:e.status,
       referer:e.referer,ua:e.ua,sess_id:e.sess_id,layer:e.layer});
   }
+  // 1.1.21：复现用户截图 —— 打开 /fnzerror 应用时同一秒并发发出 9 个 API
+  // 请求，除路径外所有字段完全一致。用于验收「表格合并为一行、只记录动作」。
+  var burstTs=now-3, burstIp='220.205.248.177';
+  var burstPaths=['/fnzerror/api/logs/stream','/fnzerror/api/logs/stream',
+    '/fnzerror/api/cmd/get_folder_stats','/fnzerror/icons/models/deepseek.png',
+    '/fnzerror/api/cmd/get_server_status','/fnzerror/models.json',
+    '/fnzerror/api/cmd/get_pending_correction_question_C',
+    '/fnzerror/api/cmd/get_folders','/fnzerror/api/cmd/greet'];
+  var burstRows=[];
+  burstPaths.forEach(function(p,k){
+    burstRows.push({id:9000+k,ts:burstTs,source:'local_web',ip:burstIp,
+      country:'中国',province:'安徽省',city:'合肥',district:'蜀山区',
+      scope:'cn',port:0,port_src:'',service:'fnOS Web',
+      action:'正常访问 · GET 200',verdict:'normal',path:p,lat:null,lng:null,isp:'',
+      proto:'web',scheme_conf:'none',method:'GET',status:200,
+      referer:'-',ua:'Mozilla/5.0',sess_id:'burst',layer:'web'});
+  });
+  // 放在最前面（最新在前），截图第一屏就能看到「9 个请求合并为一行」
+  rows=burstRows.concat(rows);
   // 1.1.16：真机区级初始为空（三家在线源 + ip9 都拿不到区县），手工回填后才有值。
   // 预览页用这一份有状态 geo 真实验证「保存区级 → 画像归属地出现区县」。
   var ipGeo={ip:'220.195.201.172',country:'中国',province:'安徽省',city:'合肥',
@@ -343,6 +362,12 @@ window.addEventListener('error',function(e){
         var bar=document.querySelector('.rank-row[data-region]'); if(bar) bar.click();
       }
       if(location.hash==='#detail'){ var tr=document.querySelector('tr[data-ip]'); if(tr) tr.click(); }
+      // 1.1.21：三图合一的模式验收入口，直接点右上角的模式按钮出图
+      if(location.hash==='#map-cn' || location.hash==='#map-geo' || location.hash==='#map-world'){
+        var mm=location.hash.slice(5);
+        var mb=document.querySelector('#mapModeSeg button[data-mode="'+mm+'"]');
+        if(mb) mb.click();
+      }
       // 1.1.3：放大面板 / 条目下钻 / 下钻后点来源 IP 的验收入口
       if(location.hash==='#card-zoom'){
         var head=document.querySelector('.mini-card .card-head'); if(head) head.click();
@@ -413,10 +438,10 @@ window.addEventListener('error',function(e){
       return Promise.resolve({ok:true,status:200,blob:function(){
         return Promise.resolve(new Blob([summaryText],{type:'text/markdown'}));}});
     else if(u.indexOf('api/config')>=0) d={ok:true,data:cfg};
-    else if(u.indexOf('api/health')>=0) d={ok:true,version:'1.1.19'};
+    else if(u.indexOf('api/health')>=0) d={ok:true,version:'1.1.21'};
     // 1.1.15：脱敏诊断包与区级手工补充
     else if(u.indexOf('api/diag/export')>=0) d=diagText;
-    // 1.1.19：运行时报错上报 / 查询 / 导出（export 必须排在 errors 之前）
+    // 1.1.21：运行时报错上报 / 查询 / 导出（export 必须排在 errors 之前）
     else if(u.indexOf('api/runtime/errors/export')>=0){
       window.__rtExportHits++;
       d=rtExportText;
@@ -430,7 +455,7 @@ window.addEventListener('error',function(e){
         d={ok:true,saved:posted.length,total:rtErrors.length};
       } else d={ok:true,data:rtErrors,total:rtErrors.length};
     }
-    // 1.1.19：站内查询（复用在线多源核验），不依赖第三方反爬页面
+    // 1.1.21：站内查询（复用在线多源核验），不依赖第三方反爬页面
     else if(u.indexOf('api/geo/verify')>=0) d={ok:true,cached:false,ip:'220.205.86.196',
       geo:{country:'中国',province:'安徽省',city:'合肥市',district:'蜀山区'},
       verification:{confidence:'high',online_sources:3,
@@ -452,7 +477,7 @@ window.addEventListener('error',function(e){
     else if(u.indexOf('api/status')>=0) d={ok:true,data:status,sources:sources,sources_stat:{local_web:{count:12000}}};
     else if(u.indexOf('api/trend')>=0) d={ok:true,data:{bucket:3600,start:now-86400,end:now,points:trend}};
     else if(u.indexOf('api/ranking')>=0) d={ok:true,data:{cn:cn,overseas:os}};
-    else if(u.indexOf('api/records')>=0) d={ok:true,data:{total:12840,page:1,size:20,rows:rows}};
+    else if(u.indexOf('api/records')>=0) d={ok:true,data:{total:12840,page:1,size:50,rows:rows}};
     else if(u.indexOf('api/events')>=0) d={ok:true,data:{last_id:1024,events:live}};
     else if(u.indexOf('api/live')>=0) d={ok:true,data:live};
     else if(u.indexOf('api/hotspots')>=0) d={ok:true,data:spots,home:{lat:31.8639,lng:117.2808,label:'本机 · 中国安徽合肥联通（出口 IP）'},map_configured:false};
@@ -463,8 +488,16 @@ window.addEventListener('error',function(e){
     else if(u.indexOf('api/geodist')>=0) d={ok:true,data:geoAll};
     else if(u.indexOf('api/geo')>=0) d={ok:true,data:spots[0]};
     else if(u.indexOf('api/ip')>=0) d={ok:true,data:{info:rows[0],
-      agg:{n:186,first_ts:now-86400,last_ts:now,sessions:12,ports:2,paths:5},
-      recent:rows.slice(0,10),top_paths:[{path:'/.env',n:86}],
+      agg:{n:186,first_ts:now-86400,last_ts:now,sessions:12,ports:2,paths:9},
+      recent:rows.slice(0,10),top_paths:[
+        {path:'/fnzerror/api/logs/stream',n:2},
+        {path:'/fnzerror/api/cmd/get_folder_stats',n:2},
+        {path:'/fnzerror/api/auth/status',n:2},
+        {path:'/fnzerror/icons/models/deepseek.png',n:1},
+        {path:'/fnzerror/api/cmd/get_server_status',n:1},
+        {path:'/fnzerror/models.json',n:1},
+        {path:'/fnzerror/api/cmd/get_pending_correction_question_C',n:1},
+        {path:'/fnzerror/api/cmd/get_folders',n:1}],
       protocols:[{k:'web',n:120,manual:0},{k:'ssh',n:66,manual:0}],
       verdicts:[{k:'normal',n:150},{k:'attack',n:36}],
       referrers:[{k:'-',n:98},{k:'http://192.168.3.5:5666/',n:22}],
@@ -482,7 +515,7 @@ def main():
         with open(os.path.join(UI, name), "r", encoding="utf-8") as f:
             return f.read()
     html = rd("index.html")
-    # 1.1.19：单文件预览页把投喂二维码内联成 data URI，否则 file:// 下
+    # 1.1.21：单文件预览页把投喂二维码内联成 data URI，否则 file:// 下
     # images/sponsor.png 相对路径失效，关于弹窗截图会显示破图占位。
     sponsor = os.path.join(UI, "images", "sponsor.png")
     if os.path.isfile(sponsor):

@@ -2875,6 +2875,240 @@ check("⑦ 预览页内联替换仍覆盖灯箱图片",
       'html.replace("images/sponsor.png", "data:image/png;base64," + b64)' in _p32)
 
 
+# === 34. 1.1.20：IP 来源记录合并 + 路径明细收敛到画像 ===
+print("\n=== 34. 1.1.20 记录表合并 / 画像路径明细 ===")
+_h34 = open(os.path.join(UI, "index.html"), encoding="utf-8").read()
+_j34 = open(os.path.join(UI, "app.js"), encoding="utf-8").read()
+_c34 = open(os.path.join(UI, "style.css"), encoding="utf-8").read()
+_s34 = open(os.path.join(SERVER, "store.py"), encoding="utf-8").read()
+_p34 = open(os.path.join(ROOT, "tools", "make_preview.py"), encoding="utf-8").read()
+
+check("① 表头改为「动作」，卡片说明合并与路径查看位置",
+      "<th title=\"同秒同 IP 的多个请求已合并；路径明细点开画像查看\">动作</th>" in _h34 and
+      "动作 / 路径" not in _h34 and
+      "只记录动作；路径明细点开画像查看" in _h34)
+_key34 = _j34[_j34.index("function recGroupKey"):_j34.index("function mergeRecords")]
+check("② 合并键覆盖同秒 / 同 IP / 来源 / 归属 / 范围 / 协议 / 端口 / 判定 / 动作",
+      "function recGroupKey(r)" in _j34 and
+      "Math.floor(Number(r.ts) || 0)" in _key34 and
+      all(x in _key34 for x in ("r.ip", "r.source", "r.country", "r.province",
+                                "r.scope", "r.proto", "r.port", "r.port_src",
+                                "r.verdict", "r.action")))
+check("③ renderRecords 走 mergeRecords，动作格不再逐行铺路径",
+      "groups = mergeRecords(data.rows)" in _j34 and
+      "var act = esc(r.action || VERDICT_NAME[r.verdict] || '记录');" in _j34 and
+      "r.path ? esc(r.path) : esc(r.action)" not in _j34 and
+      '<span class="path" title=' not in _j34)
+check("④ 合并行标注一级应用前缀 / 条数 / 路径查看入口，条数如实显示",
+      "function pathRoot(p)" in _j34 and "个请求已合并（" in _j34 and
+      "点行看路径明细" in _j34 and "本页合并为 " in _j34 and
+      ".act-main{" in _c34 and ".act-sub{" in _c34)
+check("⑤ 每页原始取数提高到 50，配合合并后仍有一屏信息",
+      "page: 1, size: 50" in _j34 and "size:50" in _p34)
+check("⑥ 画像路径明细显示完整路径、可点击复制、标题改为路径明细",
+      "function pathBlock(list, total)" in _j34 and
+      "word-break:break-all" in _c34 and
+      '<div class="path-row" data-copy=' in _j34 and
+      _j34.count(">路径明细 · 高频路径</h3>") == 2 and
+      "max-width:300px;overflow:hidden;text-overflow:ellipsis" not in _j34)
+check("⑦ 复制改事件委托，动态插入画像的路径也能复制",
+      "document.addEventListener('click', function (e) {" in _j34 and
+      "el.closest ? el.closest('[data-copy]')" in _j34 and
+      "querySelectorAll('[data-copy]')" not in _j34)
+check("⑧ 后端 top_paths 放宽到 TOP 20（单 IP 与群组画像）",
+      "sorted(cp.items(), key=lambda x: -x[1])[:20]" in _s34 and
+      "sorted(cpath.items(), key=lambda x: -x[1])[:20]" in _s34 and
+      "sorted(cp.items(), key=lambda x: -x[1])[:8]" not in _s34 and
+      "sorted(cpath.items(), key=lambda x: -x[1])[:6]" not in _s34)
+check("⑨ 预览 mock 造同秒不同路径样本，画像 mock 给多条完整路径",
+      "burstPaths" in _p34 and "burstTs=now-3" in _p34 and
+      _p34.count("/fnzerror/") >= 8 and
+      "'/fnzerror/api/cmd/get_pending_correction_question_C'" in _p34)
+
+# 运行时实跑：把三个纯函数从 app.js 抽出来，用真实 Node 验证合并结果
+_node34 = r"""
+const fs=require('fs');
+const src=fs.readFileSync(process.argv[1],'utf8');
+function fn(name){
+  const i=src.indexOf('function '+name+'(');
+  if(i<0) throw new Error('missing '+name);
+  let d=0,k=src.indexOf('{',i);
+  for(;k<src.length;k++){ if(src[k]==='{')d++; else if(src[k]==='}'){d--; if(!d)break;} }
+  return src.slice(i,k+1);
+}
+const f=new Function(fn('pathRoot')+'\n'+fn('recGroupKey')+'\n'+
+  fn('mergeRecords')+'\nreturn {pathRoot,recGroupKey,mergeRecords};')();
+const now=1700000000;
+const paths=['/fnzerror/api/logs/stream','/fnzerror/api/logs/stream','/fnzerror/api/cmd/greet'];
+const base={ts:now,ip:'220.205.248.177',source:'local_web',country:'中国',
+  province:'安徽省',city:'合肥',district:'蜀山区',scope:'cn',proto:'web',
+  status:200,port:0,port_src:'',verdict:'normal',action:'正常访问 · GET 200'};
+const rows=paths.map(p=>Object.assign({},base,{path:p}));
+rows.push(Object.assign({},base,{ts:now+1,path:'/fnzerror/api/other'}));
+rows.push(Object.assign({},base,{ip:'1.2.3.4',path:'/fnzerror/api/other'}));
+const g=f.mergeRecords(rows);
+console.log(JSON.stringify({groups:g.length,n:g[0]._n,root:g[0]._root,
+  paths:g[0]._pathN,next:g[1]._n,other:g[2]._n,
+  rootFn:f.pathRoot('/fnzerror/api/a?x=1')}));
+"""
+try:
+    import subprocess as _sp34
+    _out34 = json.loads(_sp34.check_output(
+        ["node", "-e", _node34, os.path.join(UI, "app.js")],
+        stderr=_sp34.STDOUT, timeout=40).decode("utf-8").strip().splitlines()[-1])
+    check("⑩ Node 实跑：3 条同秒同 IP 合并为 1 行，8 条路径去重为 2，跨秒/跨 IP 不误并",
+          _out34.get("groups") == 3 and _out34.get("n") == 3 and
+          _out34.get("root") == "/fnzerror" and _out34.get("paths") == 2 and
+          _out34.get("next") == 1 and _out34.get("other") == 1 and
+          _out34.get("rootFn") == "/fnzerror", str(_out34))
+except Exception as _e34:
+    check("⑩ Node 实跑合并逻辑", False, repr(_e34))
+
+
+# === 35. 1.1.21：三张地图合并为单卡片 + 右上角模式切换 ===
+print("\n=== 35. 1.1.21 三图合一 / 右上角模式切换 ===")
+_h35 = open(os.path.join(UI, "index.html"), encoding="utf-8").read()
+_j35 = open(os.path.join(UI, "app.js"), encoding="utf-8").read()
+_c35 = open(os.path.join(UI, "style.css"), encoding="utf-8").read()
+_p35 = open(os.path.join(ROOT, "tools", "make_preview.py"), encoding="utf-8").read()
+
+check("① 首页只有一张地图卡片，三图层同属 map-stage",
+      _h35.count('class="map-stage"') == 1 and
+      'id="geoCard"' in _h35 and
+      'class="card geodist map-unified" id="geoCard"' in _h35 and
+      all(('id="' + i + '"') in _h35
+          for i in ("worldWrap", "cnWrap", "geoWrap", "mapModeSeg")) and
+      '<div class="map-grid">' not in _h35 and
+      '<div class="geo-grid">' not in _h35)
+check("② 右上角 segmented 恰好三种模式，静态文案与禁用词不回归",
+      _h35.count('button type="button" data-mode=') == 3 and
+      all(x in _h35 for x in ("境外连线", "境内连线", "全球分布",
+                               'data-mode="world"', 'data-mode="cn"',
+                               'data-mode="geo"', "连线颜色按连接频率由冷到热",
+                               "全球 IP 来源分布", "不绘制国界",
+                               "边界以官方地图为准")) and
+      "geoSeg" not in _h35 and "geoScopeTag" not in _h35 and
+      "geoBars" not in _h35 and "geoSum" not in _h35)
+_blk35 = _c35.split("/* ---------- 1.1.21", 1)[1].split("/* 三个统计卡", 1)[0]
+check("③ 非活动层只降透明度、不 display:none，SDK 初始化不白屏",
+      ".map-stage>.map-layer{position:absolute;inset:0;width:100%;height:100%;" in _blk35 and
+      "opacity:0;z-index:0;pointer-events:none" in _blk35 and
+      ".map-stage>.map-layer.active{opacity:1;z-index:2;pointer-events:auto}" in _blk35 and
+      "display:none" not in _blk35 and
+      ".map-wrap{position:relative;isolation:isolate;" in _c35 and
+      ".geo-map-wrap{position:relative;isolation:isolate;" in _c35)
+check("④ 当前模式有独立的蓝色高亮，不影响顶栏时间范围",
+      ".map-mode-seg button.on{background:rgba(59,130,246,.22)" in _c35 and
+      ".segmented button.on{background:var(--panel-3)" in _c35)
+check("⑤ setMapMode 切层不重建 SDK 实例，标题 / 标签 / 图例联动",
+      "var MAP_MODE_LAYERS = { world: 'worldWrap', cn: 'cnWrap', geo: 'geoWrap' };" in _j35 and
+      "function setMapMode(mode, save)" in _j35 and
+      "document.body.dataset.mapMode = mode" in _j35 and
+      "writeUiPref({ mapMode: mode })" in _j35 and
+      "new SDK.Map" not in _j35.split("function setMapMode", 1)[1].split("function bindMapMode", 1)[0])
+check("⑥ 模式偏好并入既有 UI_PREF_KEY，下次打开恢复",
+      "var UI_PREF_KEY = 'ipsense.ui.filters.v1';" in _j35 and
+      "if (p.mapMode) setMapMode(p.mapMode, false);" in _j35 and
+      "bindMapMode();" in _j35 and "mapMode: 'world'," in _j35)
+_bm35 = _j35.split("function bindMapMode()", 1)[1].split("\n  // ----", 1)[0]
+check("⑦ 模式按钮用父链遍历，不依赖 Element.closest",
+      "seg.onclick = function (e)" in _bm35 and
+      "t = t.parentNode" in _bm35 and "e.target.closest" not in _bm35)
+check("⑧ 切换后补 resize / 重绘，原三图绘制与销毁链不回归",
+      "if (mode === 'geo')" in _j35 and "S.geoMap.resize()" in _j35 and
+      "requestMapDraw(true)" in _j35 and
+      all(("function " + f) in _j35 for f in
+          ("drawTMaps", "drawCanvas", "drawGeoCanvas", "drawGeoMarkers",
+           "createTMaps", "failMap", "rebuildMap")) and
+      "[S.world, S.cn, S.geoMap]" in _j35 and
+      "$('worldWrap').classList.add('tmap-on')" in _j35)
+check("⑨ 预览页与探针提供三种模式出图入口",
+      all(x in _p35 for x in ("#map-cn", "#map-geo", "#map-world",
+                              "mapModeSeg button[data-mode=")) and
+      os.path.isfile(os.path.join(ROOT, "build", "probe_1_1_21.py")))
+
+# Node 实跑：把 setMapMode 抽出来喂 mock DOM，验证三种模式真的只亮一个图层
+_node35 = r"""
+const fs=require('fs');
+const src=fs.readFileSync(process.argv[2]||process.argv[1],'utf8');
+function fn(name){
+  const i=src.indexOf('function '+name+'(');
+  if(i<0) throw new Error('missing '+name);
+  let d=0,k=src.indexOf('{',i);
+  for(let p=k;p<src.length;p++){
+    if(src[p]==='{') d++;
+    else if(src[p]==='}'){ d--; if(d===0){ k=p+1; break; } }
+  }
+  return src.slice(i,k);
+}
+function el(attrs){
+  const o={_c:new Set(),attrs:attrs||{},style:{},textContent:'',className:'',
+    getAttribute:function(k){return this.attrs[k]||'';},querySelectorAll:function(){return [];}};
+  o.classList={add:function(c){o._c.add(c);},remove:function(c){o._c.delete(c);},
+    contains:function(c){return o._c.has(c);}};
+  return o;
+}
+const E={};
+['mapModeSeg','mapModeTitle','mapModeDesc','mapModeTag','mapModeLegend',
+ 'mapModeLegendLine','worldWrap','cnWrap','geoWrap'].forEach(function(k){E[k]=el();});
+const modes=['world','cn','geo'];
+const titles={world:'境外来源 · 全球视图',cn:'境内来源 · 中国视图',geo:'全球 IP 来源分布'};
+const tags={world:'境外',cn:'境内',geo:'全球'};
+const tagcls={world:'tag-red',cn:'tag-green',geo:'tag-blue'};
+const btns=modes.map(function(m){return el({'data-mode':m,'data-title':titles[m],
+  'data-desc':'desc-'+m,'data-tag':tags[m],'data-tagcls':tagcls[m]});});
+E.mapModeSeg.querySelectorAll=function(){return btns;};
+const document={body:{dataset:{}}};
+const S={mapMode:'world',geoMap:null,tmapReady:false,cn:null,world:null};
+const calls=[];
+const $=function(id){return E[id];};
+const writeUiPref=function(p){calls.push(['pref',p.mapMode]);};
+const requestMapDraw=function(f){calls.push(['draw',f]);};
+const drawGeo=function(){calls.push(['geo']);};
+const MAP_MODE_LAYERS={world:'worldWrap',cn:'cnWrap',geo:'geoWrap'};
+const setMapMode=new Function('S','$','document','writeUiPref','requestMapDraw',
+  'drawGeo','MAP_MODE_LAYERS',fn('setMapMode')+'\nreturn setMapMode;')
+  (S,$,document,writeUiPref,requestMapDraw,drawGeo,MAP_MODE_LAYERS);
+const out=[];
+modes.forEach(function(m){
+  setMapMode(m,true);
+  out.push({mode:S.mapMode,ds:document.body.dataset.mapMode,
+    active:Object.keys(MAP_MODE_LAYERS).filter(function(k){
+      return E[MAP_MODE_LAYERS[k]].classList.contains('active');}),
+    title:E.mapModeTitle.textContent,tag:E.mapModeTag.textContent,
+    tagcls:E.mapModeTag.className,legend:E.mapModeLegend.style.display,
+    line:E.mapModeLegendLine.className,
+    on:btns.filter(function(b){return b.classList.contains('on');})
+      .map(function(b){return b.getAttribute('data-mode');}),
+    pref:calls.filter(function(c){return c[0]==='pref';}).slice(-1)[0][1]});
+});
+setMapMode('bogus',false);
+out.push({bogus:S.mapMode});
+console.log(JSON.stringify(out));
+"""
+try:
+    import subprocess as _sp35
+    _out35 = json.loads(_sp35.check_output(
+        ["node", "-e", _node35, os.path.join(UI, "app.js")],
+        stderr=_sp35.STDOUT, timeout=40).decode("utf-8").strip().splitlines()[-1])
+    check("⑩ Node 实跑：三种模式各只激活一个图层，标题 / 标签 / 高亮 / 偏好联动",
+          len(_out35) == 4 and
+          all(o.get("active") == [o.get("mode")] for o in _out35[:3]) and
+          all(o.get("ds") == o.get("mode") and o.get("on") == [o.get("mode")]
+              and o.get("pref") == o.get("mode") for o in _out35[:3]) and
+          [o.get("title") for o in _out35[:3]] ==
+              ["境外来源 · 全球视图", "境内来源 · 中国视图", "全球 IP 来源分布"] and
+          [o.get("tag") for o in _out35[:3]] == ["境外", "境内", "全球"] and
+          [o.get("tagcls") for o in _out35[:3]] ==
+              ["tag tag-red", "tag tag-green", "tag tag-blue"] and
+          _out35[0].get("line") == "lg-red" and
+          _out35[1].get("line") == "lg-green" and
+          _out35[2].get("legend") == "none" and
+          _out35[3].get("bogus") == "world", str(_out35)[:280])
+except Exception as _e35:
+    check("⑩ Node 实跑模式切换", False, repr(_e35))
+
+
 print("\n=== 结果：%d 项通过 / %d 项失败 ===" % (ok, len(fail)))
 if fail:
     print("失败项：" + ", ".join(fail))
