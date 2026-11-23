@@ -2,6 +2,47 @@
 
 飞牛 fnOS 原生应用（FPK），实时呈现「谁在扫描我的设备」。
 
+## 当前版本：1.1.29 · mh setup 引导与原生防火墙单通道
+
+1.1.29 把「新用户装完 skill 怎么连上 NAS」和「封禁怎么做到重启不失效」两件事收口：
+
+- **`mh setup` 一步步引导**：8 步自动完成环境体检、收集连接信息、建 bootstrap 连接并
+  动态读 `$HOME`、生成专用 ed25519 密钥对、追加带 `ipsense-agent-bridge:<grant_id>` 标记的
+  `authorized_keys`、合并写 `keyauth.json`、取回私钥到 `~/.ipsense/agent_ed25519`、写
+  `bridge.json`（`auth=key`）并跑三项验证。`--dry-run` 只演练、`--force` 重建、`--yes` 强制
+  非交互；改任何文件前留 `.bak`，私钥只进内存与本机文件，不进 UI / 报告 / 日志。
+- **可撤销不变**：授权元数据与 `keyauth.py` 严格对齐，UI「密钥授权区」可见、
+  `mh key revoke` 可撤销；真机实测新建授权 → 撤销旧授权后 `authorized_keys` 标记行 2→1、
+  `keys/` 旧副本按白名单删除、`mh check` 仍走新私钥连通。
+- **处置通道收敛**：`fw` 删除全部 iptables 路径，永久 / 临时封禁都只写飞牛原生防火墙
+  `fw.conf` 的 deny 规则、`security_service` reload，重启 NAS 后服务重读配置重建规则。
+- **skill 与文档入版本库**：`skills/ipsense-agent-bridge/` 与 `docs/agent-bridge.md` 纳入
+  版本库，GitHub 主页 README 补齐 skill CLI 的配置方法、使用方法与排障。
+
+红线不变：**只观测、不封禁、不改防火墙、不自动处置；处置完全交给外部 agent。**
+
+## 1.1.28 · 密钥授权入口与多缩放适配
+
+1.1.28 修复「不同浏览器缩放下密钥授权界面显示不正常」：
+
+- **根因**：1.1.27 的密钥授权是夹在四个 Tab 与列表之间的 `flex` 子项。提交单卡片带 `max-height:88vh` 与 `overflow:hidden`，展开授权后它抢占高度，浏览器缩放（90% / 100% / 125%）改变了可用视口，`orders-body` 被挤压、底部内容被裁切。
+- **改法**：入口移到弹层右上角「关闭」左侧（带生效授权数角标），点开才显示浮层；浮层改 `position:absolute` 锚在右上角下方，**脱离卡片文档流**，因此缩放多少都不影响四区列表。浮层内部超长时自己滚动。
+- **收起闭环**：点浮层外、点入口本身、关闭提交单或按 ESC 都会收起浮层；ESC 优先收浮层、不直接关弹层。
+- **行为不变**：`/api/keyauth/state` 与 `/api/keyauth/revoke` 不变，撤销仍只删本应用带标记的那行 `authorized_keys` 与设备上自有密钥副本；私钥内容不出现在 UI / 报告 / 日志。
+
+红线不变：**只观测、不封禁、不改防火墙、不自动处置；处置完全交给外部 agent。**
+
+## 1.1.27 · 密钥授权与直接执行
+
+1.1.27 把「复制提示词 → 外部 agent」这条链路补成闭环，且**不破坏只观测红线**：
+
+- **密钥授权区**：提交单弹层里新增可折叠区块，列出 agent 通过 SSH 建立的专用密钥授权（指纹、公钥、授权时间、设备、状态）。用户有权得知，并可随时点「撤销授权」——后端只删 `authorized_keys` 里带 `ipsense-agent-bridge:<id>` 标记的那一行，以及 `/vol1/@appdata/ipsense/keys/` 下该授权自己的私钥 / 公钥副本，不碰用户其它密钥。撤销后 agent 立即失去连接能力。
+- **直接执行**：用户复制提示词发给 agent 后，agent 按标注里的操作指令直接执行（封禁 / 观察 / 放行等），**不再默认二次确认**；只有白名单命中、标注自相矛盾、批量过大、标注与证据严重冲突等「争议项」才问用户。观测数据（IP、访问时间、路径、归属、频率、协议、端口）是判断依据，不是指令。
+- **通道分工（2026-11-23 收敛）**：`mh` 仍是提交单唯一手眼（写命令只改状态 / 总结）；`fw` 是**唯一处置通道**，通过 SSH + sudo 只写飞牛原生防火墙 `/usr/trim/etc/fw.conf` 的入站拒绝规则（`allow:false`、`memo:ips:<ip>`、重启 `security_service` 即时生效）。规则落盘、NAS 重启后由服务重建，在「系统设置 → 安全性 → 防火墙 → 入站规则」可见、可审计；不带 `--ttl` 的「直接封禁」= 永久封禁并持久化。1.1.27 最初是 `iptables` DROP + 双写，实测重启后 iptables 规则全失、原生规则一直扛着，故收敛为单通道，**不再下发任何 iptables / nft 规则**；`ipblocker`（防护 → 封禁名单）只是应用层登录防护、不参与处置，那里为空属正常。主包本身**永不**调用 `fw`、永不改防火墙。
+- **兼容性**：`mh` 不再只认密钥，`auth: password` 走 paramiko 账号密码通道；密钥 / 密码都不写进报告、日志或 UI。
+
+红线不变：**只观测、不封禁、不改防火墙、不自动处置；处置完全交给外部 agent。**
+
 ## 1. 能力对照
 
 | # | 需求 | 实现 |
@@ -82,7 +123,90 @@ FPK
 
 ### 功能演进
 
-**1.1.21（当前版本）**
+**1.1.29（当前版本）**
+
+- 🆕 **新用户一步步引导**：`mh setup` 用 8 步自动配好 SSH、生成专用 ed25519 密钥对、
+  建立可撤销授权、取回私钥、写好 `bridge.json` 并跑完验证；`--dry-run` 只演练、
+  `--force` 重建、`--yes` 强制非交互，改文件前留 `.bak`。
+- 🆕 **授权可视可撤销**：元数据与 `keyauth.py` 严格对齐，UI「密钥授权区」可见，
+  `mh key revoke` 只删本应用那行授权与白名单目录内的密钥副本。
+- 🧩 **处置单通道**：`fw` 移除全部 iptables 代码路径，永久 / 临时封禁都只写
+  `/usr/trim/etc/fw.conf` deny 规则，由 `security_service` 加载进 eBPF，重启后保持。
+- 🧩 **skill 与文档入库**：`skills/`、`docs/agent-bridge.md` 进版本库，GitHub 主页
+  README 新增 skill CLI 配置方法、使用方法与排障表。
+- 🧩 **红线不变**：主包仍不含任何系统命令；`mh setup` 是 agent 侧一次性引导，
+  只碰 SSH 授权与本机 `~/.ipsense/` 配置，版本滚动至 1.1.29，三架构包内容一致。
+
+**1.1.28**
+
+- 🐛 **多缩放显示修复**：修复 90% / 100% / 125% 缩放下密钥授权挤压四区列表、弹层底部被 `overflow:hidden` 裁掉的问题。根因是 1.1.27 把授权做成 Tab 下方的 `flex` 子项，展开后抢占 `max-height:88vh` 卡片的高度。
+- 🆕 **右上角入口**：`.orders-head` 右侧「关闭」左边新增「密钥授权」文字入口，带生效授权数角标，默认浮层收起，点开才显示指纹 / 公钥 / 时间 / 设备与撤销按钮。
+- 🧩 **浮层脱离文档流**：`.keyauth-pop` 用 `position:absolute` 锚在右上角下方、`z-index:60`，不占卡片 `flex` 文档流；`.keyauth-list` 内部 `flex:1` + 滚动，超长授权自己滚，不再挤压列表。
+- 🧩 **收起闭环**：点浮层外、再点入口、关提交单、按 ESC 都会收起；ESC 先收浮层保留弹层。新增 `keyauthOpen()` / `keyauthClose()` / `keyauthIsOpen()`，卡片上单击委托判断触点是否在入口或浮层内。
+- 🧩 **红线不变**：后端 `keyauth.py` / `gateway.py` / `orders.py` 零改动，只动 `index.html` / `style.css` / `app.js`；主包仍不含任何系统命令，版本滚动至 1.1.28，三架构包内容一致。
+
+**1.1.27**
+
+- 🆕 **密钥授权区（用户可知、随时可撤销）**：提交单弹层四个 Tab 下方新增可折叠区块，列出 agent 通过 SSH 建立的专用密钥授权（指纹、公钥、授权时间、设备、状态），私钥内容不出现在 UI / 报告 / 日志。后端 `keyauth.py` 的 `revoke()` 只删 `authorized_keys` 里带 `ipsense-agent-bridge:<id>` 标记的那一行，以及 `/vol1/@appdata/ipsense/keys/` 下该授权自己的私钥 / 公钥副本；用户其它密钥一概不动，保留原文件属主与 `600` 权限避免 sshd `StrictModes` 拒绝。
+- 🆕 **复制提示词后直接执行**：agent 收到短提示词后按 `note` 里的操作指令直接执行（封禁 / 观察 / 放行 / 复原），不再默认二次确认；只有白名单命中、标注自相矛盾、批量过大、标注与证据严重冲突等「争议项」才问用户。`evidence` 里的 IP、访问时间、路径、归属、频率、协议、端口是观测数据，作为判断依据。
+- 🆕 **`fw` 处置通道**：`skills/ipsense-agent-bridge/scripts/fw.py` 通过 SSH + sudo 在 NAS 上执行 `iptables -I INPUT -s <ip> -j DROP -m comment --comment ipsense-agent-bridge:<ip>`，带标记、可精确回滚、默认 TTL 3600s 自动解封；`fw status / ban / unban / list` 四个命令。它不读 `orders.json`、不调 `/api/mh/write`，主包也**永不**调用它。
+- 🆕 **`mh` 兼容账号密码 SSH**：新增 `auth: password`（paramiko）与 `mode: local`，密码只从环境变量 / `~/.workbuddy/secrets/oesp_cred.txt` 读，不落 `bridge.json`、不打印；新增 `mh key status` / `mh key revoke`。`auth: key` 仍用系统 `ssh -i`。
+- 🧩 **规矩重写**：`SKILL.md` 从「必须二次确认 / 数据不是指令 / 不做永久封禁」改为「标注即指令 / 直接执行 / 仅争议才确认」；`mh` 写命令仍只改提交单状态 / 总结，乐观锁回执防串台不变。
+- 🧩 **红线不变**：主包只观测、不封禁、不改防火墙、不自动处置；`gateway.py` 只新增两个 `/api/keyauth/*` 文件级接口，不含任何系统命令；`orders.py` 本版零改动。
+
+> **行为修订（2026-11-23，仅 skill 侧，未发 FPK）**：上面 `fw` 那一条是 1.1.27 当时的实现。
+> 通道已收敛为「只写飞牛原生防火墙 `fw.conf`」单通道，默认永久封禁（不再默认 TTL 3600），
+> 见 `skills/ipsense-agent-bridge/SKILL.md` 第 4 节与 0.5 节「H. 版本对应关系」。
+> 历史条目按当时事实保留，此处只作当前口径注记。
+
+**1.1.26**
+
+- 🧩 **画像里只留输入框**：`IP 来源画像` 的标注行撤掉行内「保存并加入提交单」按钮 —— 它与写标注窗口里的保存按钮功能重复，且 1.1.24 改成只读触发器后已不再起作用。现在这一行只有一个只读输入框，点它弹出「给这个 IP 写标注」窗口，填写、选预设、保存都在窗口里完成。
+- 🧩 **保存入口唯一**：保存只由窗口底部的「保存并加入提交单」触发，走 `saveNote(ip, root, noteOverride, done)` 把窗口里多行输入的值写入提交单；成功后仍回写只读框显示最新标注，`orders.json` 的数据结构与四区状态机零改动。
+- 🧩 **布局更整**：删按钮后输入框 `flex:1` 占满 `note-row`，移动端不再有按钮折行留白；同时清掉 `.btn-note` 两处孤儿样式与 `save-note` 事件分支，不留死代码。
+- 🧩 **红线不变**：软件永远不改防火墙设置，处置完全交给外部 agent；本版只动前端交互，`orders.py` / `gateway.py` 接口零改动。
+
+**1.1.25**
+
+
+- 🆕 **提交单四区看板**：提交单弹层顶部新增 `待处理 / 已完成 / 待撤回 / 全部` 四个 Tab，每个带计数角标。状态落在 `/vol1/@appdata/ipsense/orders.json` 的 `status` 字段（`pending / done / revert / restored`），`done` 与 `restored` 都在「已完成」区展示，「全部」额外显示状态徽标、历史流转与完整操作流水 `log`。
+- 🆕 **一句话提示词**：`复制读取提示词` 从原先几百字的结构化模板压成 `请读取工程中的 AI 标记，按标注逐项修改` 一句话，另附 `读取路径` 与 `读取命令 mh read pending`；「待撤回」区给出 `请读取工程中的 AI 标记，按标注逐项复原`。边界、完整证据在哪读、白名单、TTL、回滚、二次确认、建议流程全部挪进 `ipsense-agent-bridge` skill，避免每次提交重复烧 token。
+- 🆕 **AI 总结与一键复原**：agent 通过 `mh` 提交时写入 `summary`，「已完成」区点「查看 AI 总结」展开大致操作；每条可点「待撤回」移进待撤回区，复制复原提示词发给 agent 后由它复原并显示「已复原」。
+- 🆕 **`mh` CLI 成为唯一手眼**：`skills/ipsense-agent-bridge/scripts/mh.py` 提供 `check / path / state / read / show / prompt / ip / prepare / commit / discard / mark-done / restore`，agent 对工程状态的一切感知与修改都走它，不直接读文件、不拼接口、不在浏览器里长驻。每次调用是短命进程，状态全部落在 NAS 的 `orders.json`。
+- 🧩 **读写严格分层**：`state / read / show / prompt / path / ip / check` 只发 GET；`prepare / commit / discard / mark-done / restore` 只发 `POST /api/mh/write`。写命令只改提交单里的状态、总结、`rev` 与流水，明确不碰用户页面 `ui/*`、配置、日志与任何系统设施。
+- 🧩 **乐观锁防串台**：每条带 `rev`，`mh read` 签发 `receipt = f(ip, rev, status)`；`prepare` 校验回执，`commit` 再复核 `rev`。用户重新标注或换个 agent 抢先提交后，旧回执被 `409` 拒绝，不会把过时指令误标成已完成。
+- 🧩 **防呆状态机**：`TRANSITIONS` 只允许 `pending → done`（mark-done）与 `revert → restored`（restore）两种 agent 转移，其余一律拒绝；`clear / remove / toggle` 等用户侧动作保持原样。
+- 🧩 **接口兼容**：旧 `/api/orders` 三个接口保留，新增 `/api/orders/prompt?tab=` 与 `request-revert` 动作；agent 侧新增 `/api/mh/state`、`/api/mh/show`、`/api/mh/path`、`/api/mh/prompt` 四个只读口和 `/api/mh/write` 唯一写入口。
+- 🧩 **红线不变**：软件永远不改防火墙设置，处置完全交给外部 agent；主包仍只读写 `orders.json`。
+
+**1.1.24**
+
+- 🆕 **标注输入框回归单行**：撤掉 1.1.23 的「点开原地放大成大文本框」，`IP 来源画像` 的标注框回到 1.1.22 的紧凑单行（只读）。点一下输入框，改为弹出一个独立的「写标注」窗口，在里面用多行输入框填写 500 字以内的要求；点「保存并加入提交单」后窗口关闭、只读框显示最新标注。
+- 🆕 **预设常用要求**：写标注窗口里预置 6 个「用户可能需要的操作」快捷项（先观察 24 小时、持续异常再临时封禁、疑似误报加白名单、交给 agent 判断、高危优先核查、仅记录不处置），点一下把对应文字追加进输入框，还能自己再编辑。它们只是标注文字 / 给外部 agent 的要求，应用不执行、不碰防火墙。
+- 🆕 **四个弹层淡入淡出**：「提交单」「关于」「投喂入口」和新增的「写标注」窗口统一改为 `opacity + visibility` 过渡，打开淡入、关闭淡出都平滑；`mask` 常驻 `display:flex`，不再用 `display:none→flex` 配合 `@keyframes` 那种在内嵌 WebView 与「减少动态效果」下容易整段不触发的写法。开关仍是 `classList.add/remove('on')`，JS 逻辑不变。
+- 🧩 **减少动态效果**：系统开启 `prefers-reduced-motion` 时直接切换、不做位移与过渡。
+- 🧩 **红线不变**：软件永远不改防火墙设置，写标注窗口与预设项只产出结构化文字证据，处置完全交给外部 agent。
+
+**1.1.23**
+
+- 🆕 **标注输入区放大**：`IP 来源画像` 里的标注框改成了可展开的多行输入区。点一下输入框，输入区占满整行、从一行增高到约 `104px`（宽高同时变大），卡片同时高亮上浮，「保存并加入提交单」按钮换到下一行右对齐；点击标注框以外的任何地方，自动缩回原来的大小。500 字以内的长要求现在能完整看到、直接编辑。
+- 🆕 **三个弹层弹出动画**：点顶栏「提交单」「关于」，以及关于页里的「投喂入口」，弹层打开时遮罩淡入、卡片自下方轻微回弹放大（`0.3s`）。关闭后再打开同样有动效。
+- 🧩 **放大不缩放卡片**：没有用 `transform:scale`，因为画像抽屉 `.drawer-body` 带 `overflow-y:auto`，缩放后的边缘会被裁掉，内嵌 WebView 里文字也会发虚。改为输入区占满整行并增高 + 卡片高亮上浮。
+- 🧩 **点框内按钮不收起**：放大态由 `document` 级点击委托维护，只有点在标注框之外才还原。点框内的「保存并加入提交单」不会让按钮位置突然上移，避免点击落空。
+- 🧩 **内嵌 WebView 兼容**：判断点击是否落在标注框内用父链遍历，不依赖 `Element.closest`；同时保留 CSS `:focus-within` 作为纯样式兜底，键盘 Tab 聚焦同样能放大。
+- 🧩 **减少动态效果**：系统开启「减少动态效果」（`prefers-reduced-motion`）时，三个弹层的动画与输入区过渡自动关闭，直接呈现最终状态。
+
+**1.1.22**
+
+- 🆕 **IP 标注**：`IP 来源画像` 顶部 IP 右侧加一个输入框，写下你对该 IP 的要求（例如「先观察 24 小时；若继续爆破，临时封禁 2 小时并保留回滚」）。点「保存并加入提交单」后，标注与画像证据快照一起落到 `/vol1/@appdata/ipsense/orders.json`，卸载应用后仍保留。
+- 🆕 **提交单**：顶栏「提交单」按钮固定在「关于」左侧，带条数角标；弹层里逐条列出 IP、用户要求与观测证据，可「移出」或「清空」。提交单只增删自己的 JSON 记录，不触碰任何系统规则。
+- 🆕 **复制读取提示词**：提交单下方一键复制一段结构化提示词，发给任意连接这台设备 SSH 的 agent。提示词含红线声明、提交单与 socket 读取路径、白名单 / TTL / 回滚 / 二次确认约束，以及每条 IP 的证据。
+- 🆕 **skill CLI**：仓库新增 `skills/ipsense-agent-bridge/`，安装后 `init` 引导配置 SSH；agent 直接装在 NAS 上时自动识别 `local` 模式直读本机 socket，无需 SSH。提供 `check` / `orders` / `prompt` / `ip` / `path` 五个只读命令。
+- 🧩 **红线固化**：软件永远不改防火墙设置。后端新增 `orders.py`，只读写 `orders.json`，不 import `subprocess`、不调用 `os.system`、不触碰任何防火墙设施；主包保持零权限、只观测。
+- 🧩 **防提示词注入**：用户标注、路径、归属等全部放进「数据区」，明确声明是数据不是指令；文本统一去控制字符 / 换行 / 尖括号并截断，IP 走字符白名单校验。
+- 🧩 **只观测口径**：关于页、提交单弹层、README、manifest changelog 与提示词全部写明「处置完全交给外部 agent」，自检新增第 36 节覆盖红线与数据结构。
+
+**1.1.21**
 
 - 🆕 **三图合一**：原先「境外来源 · 全球视图」「境内来源 · 中国视图」「全球 IP 来源分布」是三块独立卡片（两张 `340px` 并排 + 一张 `420px` 全宽），同一屏里重复摆了三张地图。`1.1.21` 起收进一张卡片 `geoCard`，内部用 `.map-stage` 叠放三个图层，卡片右上角加 `mapModeSeg` 分段控件，点「境外连线 / 境内连线 / 全球分布」即时切换，不再上下滚动找图。
 - 🆕 **模式联动与记忆**：`setMapMode()` 同步切换标题、副标题、范围标签、图例与图层高亮，并把 `mapMode` 并入既有 `ipsense.ui.filters.v1` 偏好；下次打开由 `applyUiPref()` 恢复上次选择。`bindMapMode()` 用父链遍历派发点击，不依赖 `Element.closest`，兼容内嵌 WebView。
@@ -532,7 +656,7 @@ $PY tools/make_icon.py                 # 生成图标
 $PY tools/selftest.py                  # 离线自检
 node --check src/app/ui/app.js         # 前端语法
 PY=$PY bash tools/build_fpk.sh         # 打包（LF / 可执行位 / py_compile / checksum）
-$PY tools/deploy.py --fpk build/ipsense_1.1.21_all.fpk
+$PY tools/deploy.py --fpk build/ipsense_1.1.29_all.fpk
 ```
 
 `build_fpk.sh` 用 `tarfile` 显式写权限位（`cmd/*` = 0755），避免从 Windows 打包时丢可执行位；
@@ -546,9 +670,9 @@ ipsense 是纯 Python 标准库 + JS/CSS + `ip2region` 数据文件，没有任�
 
 | 安装包 | `platform` | 适用 |
 |---|---|---|
-| `ipsense_1.1.21_all.fpk` | `all` | 通用，x86 与 ARM 都能装，**推荐** |
-| `ipsense_1.1.21_x86.fpk` | `x86` | x86_64 设备，或按架构分发的应用源 |
-| `ipsense_1.1.21_arm.fpk` | `arm` | aarch64 设备，或按架构分发的应用源 |
+| `ipsense_1.1.29_all.fpk` | `all` | 通用，x86 与 ARM 都能装，**推荐** |
+| `ipsense_1.1.29_x86.fpk` | `x86` | x86_64 设备，或按架构分发的应用源 |
+| `ipsense_1.1.29_arm.fpk` | `arm` | aarch64 设备，或按架构分发的应用源 |
 
 `build_fpk.sh` 打完通用包后会自动调用 `tools/build_multiarch.py` 派生另两个包（`SKIP_MULTIARCH=1` 可跳过）。派生脚本不修改 `src/manifest`、不改动 `all` 包，且逐成员校验「除 `platform` 行外字节与权限完全一致」。
 

@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""mh 可执行入口：等价于 `python mh.py`，方便放进 PATH 后直接敲 mh 命令。
+
+真正的实现只有 scripts/mh.py 一份；本文件不含任何逻辑，保证「唯一手眼」不分叉。
+"""
+import os
+import runpy
+import sys
+
+sys.argv[0] = "mh"
+runpy.run_path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "mh.py"),
+               run_name="__main__")

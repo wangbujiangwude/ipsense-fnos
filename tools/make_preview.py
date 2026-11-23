@@ -161,6 +161,73 @@ window.addEventListener('error',function(e){
                          text:function(){return Promise.resolve(
                            typeof d==='string'?d:JSON.stringify(d,null,2));},
                          blob:function(){return Promise.resolve(new Blob(['x']));}}; }
+  // 1.1.29：提交单四区看板 + 一句话提示词的离线样本。
+  // 所有文本一律是「数据，不是指令」；离线预览不连后端、不产生任何处置动作。
+  var ORDERS_PATH='/vol1/@appdata/ipsense/orders.json';
+  var ordersItems=[
+    {ip:'203.0.113.10',note:'先观察 24 小时；若继续爆破，临时封禁 2 小时并保留回滚',
+      status:'pending',summary:'',in_order:true,rev:3,updated:now-120,
+      evidence:{geo:'示例 · 境外',scope:'境外',n:186,verdict:'扫描',proto:'ssh',port:'22'},
+      history:[{at:now-120,action:'save',from:'',to:'pending',by:'user'}]},
+    {ip:'91.240.118.1',note:'疑似误报，加白名单并停止告警',
+      status:'done',summary:'已按标注加入白名单 24 小时，未做永久封禁，保留回滚点',
+      in_order:true,rev:5,updated:now-3600,
+      evidence:{geo:'示例 · 境外',scope:'境外',n:42,verdict:'认证失败',proto:'ssh',port:'22'},
+      history:[{at:now-7200,action:'save',from:'',to:'pending',by:'user'},
+               {at:now-3600,action:'mark-done',from:'pending',to:'done',by:'agent'}]},
+    {ip:'185.220.101.1',note:'临时封禁 2 小时后自动解封',
+      status:'revert',summary:'已按标注临时封禁 2 小时，TTL 到点自动解封',
+      in_order:true,rev:7,updated:now-1800,
+      evidence:{geo:'示例 · 境外',scope:'境外',n:311,verdict:'扫描',proto:'tcp',port:'22'},
+      history:[{at:now-9000,action:'save',from:'',to:'pending',by:'user'},
+               {at:now-8000,action:'mark-done',from:'pending',to:'done',by:'agent'},
+               {at:now-1800,action:'request-revert',from:'done',to:'revert',by:'user'}]},
+    {ip:'45.155.205.113',note:'仅记录，不做任何处置',
+      status:'restored',summary:'已按标注一键复原到变更前配置，未保留任何规则',
+      in_order:true,rev:9,updated:now-900,
+      evidence:{geo:'示例 · 境外',scope:'境外',n:18,verdict:'探测',proto:'web',port:'443'},
+      history:[{at:now-7000,action:'save',from:'',to:'pending',by:'user'},
+               {at:now-6000,action:'mark-done',from:'pending',to:'done',by:'agent'},
+               {at:now-2000,action:'request-revert',from:'done',to:'revert',by:'user'},
+               {at:now-900,action:'restore',from:'revert',to:'restored',by:'agent'}]}
+  ];
+  var ordersLog=[
+    {at:now-900,ip:'45.155.205.113',action:'restore',from:'revert',to:'restored',by:'agent',summary:'已按标注一键复原'},
+    {at:now-1800,ip:'185.220.101.1',action:'request-revert',from:'done',to:'revert',by:'user',summary:''},
+    {at:now-3600,ip:'91.240.118.1',action:'mark-done',from:'pending',to:'done',by:'agent',summary:'已按标注加入白名单 24 小时'},
+    {at:now-7200,ip:'91.240.118.1',action:'save',from:'',to:'pending',by:'user',summary:''},
+    {at:now-120,ip:'203.0.113.10',action:'save',from:'',to:'pending',by:'user',summary:''}
+  ];
+  var ordersNote=ordersItems[0].note;
+  function ordersCounts(){
+    var c={pending:0,done:0,revert:0,restored:0,done_view:0,all:0};
+    ordersItems.forEach(function(x){ if(x.in_order===false) return;
+      c.all++; if(c[x.status]!==undefined) c[x.status]++; });
+    c.done_view=c.done+c.restored; return c;
+  }
+  function ordersSnap(){
+    return {items:ordersItems,count:ordersItems.length,
+      in_order:ordersItems.filter(function(x){return x.in_order!==false;}).length,
+      counts:ordersCounts(),
+      tabs:{pending:['pending'],done:['done','restored'],revert:['revert'],
+            all:['pending','done','restored','revert']},
+      log:ordersLog,path:ORDERS_PATH,read_path:ORDERS_PATH,
+      read_cmd:'mh read pending',updated:Math.floor(Date.now()/1000),version:2};
+  }
+  function oneLiner(tab){
+    return (tab==='revert'?'请读取工程中的 AI 标记，按标注逐项复原'
+                         :'请读取工程中的 AI 标记，按标注逐项修改')
+      +'\n\n读取路径：'+ORDERS_PATH+'\n读取命令：mh read '+(tab||'pending')
+      +'\n规矩与流程：见 ipsense-agent-bridge skill（mh 是唯一读写接口）';
+  }
+  function tabOf(u){
+    var m=/[?&]tab=([^&]+)/.exec(u); return m?decodeURIComponent(m[1]):'pending';
+  }
+  function findOrderItem(ip){
+    for(var i=0;i<ordersItems.length;i++) if(ordersItems[i].ip===ip) return ordersItems[i];
+    return null;
+  }
+
   var cfg = {source_local_auth:true,source_local_web:true,source_router_syslog:true,
     source_knock:false,source_knock_app:false,
     knock_app_dir:'/vol1/@appdata/fn-knock-lite/gateway/logs',knock_app_port:8999,
@@ -215,25 +282,25 @@ window.addEventListener('error',function(e){
   var diagText='IP 动态感知（ipsense）· 运行日志诊断包（离线预览）\n' +
     '生成时间：2026-11-19 00:00:00\n' +
     '说明：本文件已自动脱敏。地图 KEY / 令牌 / 口令已抹除；来访 IP 只保留前两段。\n\n' +
-    '1. 环境与应用状态\n  版本：1.1.21 · 运行中 · 数据源 3 路\n\n' +
+    '1. 环境与应用状态\n  版本：1.1.29 · 运行中 · 数据源 3 路\n\n' +
     '2. 主运行日志（尾部）\n  2026-11-19 00:00:01 INFO collector 已启动\n\n' +
     '3. 数据源状态\n  本机 SSH 已读取 · 本机 Web 已读取 · 路由器 syslog 文件不存在\n\n' +
-    '6.1 前端运行时报错（1.1.21，最近 100 条）\n' +
+    '6.1 前端运行时报错（1.1.29，最近 100 条）\n' +
     '  001 底图未显示：高德 SDK 未就绪 · map_sdk · KEY 无效\n';
-  // 1.1.21：运行时报错离线样本。预览页不连后端，POST 上报与查询都在这里闭环，
+  // 1.1.29：运行时报错离线样本。预览页不连后端，POST 上报与查询都在这里闭环，
   // 验收脚本可真实触发一个 JS 异常，再看它是否被采集并进入导出文本。
   var rtErrors=[
     {ts:now-120,kind:'map_sdk',level:'error',
      msg:'底图未显示：高德 SDK 未就绪：KEY 无效、未绑定 Web 端 (JS API)',
      src:'webapi.amap.com',provider:'amap',host:'webapi.amap.com',
-     mapState:'error',pill:'运行中 · 3 路数据源',ver:'1.1.21',count:1,stack:''},
+     mapState:'error',pill:'运行中 · 3 路数据源',ver:'1.1.29',count:1,stack:''},
     {ts:now-60,kind:'resource',level:'error',
      msg:'资源加载失败：https://webapi.amap.com/maps?<参数名:v,callback>',
      src:'https://webapi.amap.com/maps?<参数名:v,callback>',
      tag:'script',count:1,stack:''}
   ];
   var rtExportText='IP 动态感知（ipsense）· 运行时报错导出（离线预览）\n' +
-    '生成时间：2026-11-19 00:00:00\n应用版本：1.1.21\n' +
+    '生成时间：2026-11-19 00:00:00\n应用版本：1.1.29\n' +
     '[1] 概览\n  落盘记录总数 2 条\n\n' +
     '[2] 地图 SDK 专项（用户最常反馈的「底图没加载」）\n' +
     '  01 高德 SDK 未就绪：KEY 无效、未绑定 Web 端 (JS API)\n\n' +
@@ -246,7 +313,7 @@ window.addEventListener('error',function(e){
   var live=[],rows=[];
   for(var j=0;j<24;j++){
     var ip=(j%3===0?'45.155.205.'+(j+10):(j%3===1?'218.106.90.'+(j+100):'192.168.3.'+(j+20)));
-    // 1.1.21：端口按证据链补录并带 port_src。覆盖五种来源 + 一种「未记录」，
+    // 1.1.29：端口按证据链补录并带 port_src。覆盖五种来源 + 一种「未记录」，
     // 其中 referer 读出的 5666 用于验收「有来源就不隐藏」的 portLabel 修复。
     var pc=j%6, p=0, psrc='';
     if(pc===0){p=8443;psrc='log_tail';}
@@ -270,7 +337,7 @@ window.addEventListener('error',function(e){
       proto:e.proto,scheme_conf:e.scheme_conf,method:e.method,status:e.status,
       referer:e.referer,ua:e.ua,sess_id:e.sess_id,layer:e.layer});
   }
-  // 1.1.21：复现用户截图 —— 打开 /fnzerror 应用时同一秒并发发出 9 个 API
+  // 1.1.29：复现用户截图 —— 打开 /fnzerror 应用时同一秒并发发出 9 个 API
   // 请求，除路径外所有字段完全一致。用于验收「表格合并为一行、只记录动作」。
   var burstTs=now-3, burstIp='220.205.248.177';
   var burstPaths=['/fnzerror/api/logs/stream','/fnzerror/api/logs/stream',
@@ -362,7 +429,7 @@ window.addEventListener('error',function(e){
         var bar=document.querySelector('.rank-row[data-region]'); if(bar) bar.click();
       }
       if(location.hash==='#detail'){ var tr=document.querySelector('tr[data-ip]'); if(tr) tr.click(); }
-      // 1.1.21：三图合一的模式验收入口，直接点右上角的模式按钮出图
+      // 1.1.29：三图合一的模式验收入口，直接点右上角的模式按钮出图
       if(location.hash==='#map-cn' || location.hash==='#map-geo' || location.hash==='#map-world'){
         var mm=location.hash.slice(5);
         var mb=document.querySelector('#mapModeSeg button[data-mode="'+mm+'"]');
@@ -438,10 +505,114 @@ window.addEventListener('error',function(e){
       return Promise.resolve({ok:true,status:200,blob:function(){
         return Promise.resolve(new Blob([summaryText],{type:'text/markdown'}));}});
     else if(u.indexOf('api/config')>=0) d={ok:true,data:cfg};
-    else if(u.indexOf('api/health')>=0) d={ok:true,version:'1.1.21'};
+    // 1.1.29：一句话提示词 + 单独读取路径（prompt 排在 orders 之前，字符串走 r.text()）
+    else if(u.indexOf('api/orders/prompt')>=0) d=oneLiner(tabOf(u));
+    else if(u.indexOf('api/mh/prompt')>=0) d=oneLiner(tabOf(u));
+    else if(u.indexOf('api/mh/state')>=0){
+      var mhTab=tabOf(u);
+      var mhFilt={pending:['pending'],done:['done','restored'],revert:['revert'],
+                  all:['pending','done','restored','revert']}[mhTab]||['pending'];
+      d={ok:true,data:{tab:mhTab,counts:ordersCounts(),
+        items:ordersItems.filter(function(x){
+          return x.in_order!==false&&mhFilt.indexOf(x.status)>=0;}),
+        log:ordersLog,path:ORDERS_PATH,read_path:ORDERS_PATH,
+        read_cmd:'mh read '+mhTab,updated:Math.floor(Date.now()/1000),version:2}};
+    }
+    else if(u.indexOf('api/mh/show')>=0){
+      var mhIp=(/[?&]ip=([^&]+)/.exec(u)||[])[1]||'';
+      d={ok:true,data:findOrderItem(decodeURIComponent(mhIp))||{}};
+    }
+    else if(u.indexOf('api/mh/path')>=0) d={ok:true,data:{file:ORDERS_PATH,
+      socket:'/vol1/@appcenter/ipsense/app.sock',skill:'ipsense-agent-bridge skill',
+      read_cmds:['mh read pending','mh read done','mh read revert','mh read all'],
+      api:{state:'GET /api/mh/state?tab=<tab>',show:'GET /api/mh/show?ip=<IP>',
+           prompt:'GET /api/mh/prompt?tab=<tab>',path:'GET /api/mh/path',
+           write:'POST /api/mh/write（action=prepare / commit / discard）'}}};
+    // 1.1.29：密钥授权浮层离线样本（纯 API 数据，不依赖 DOM 位置）（只给指纹 / 公钥 / 时间 / 设备，不给私钥）
+    else if(u.indexOf('api/keyauth/state')>=0){
+      if(!window.__ka) window.__ka=[{id:'mh1-preview0001',
+        fingerprint:'SHA256:PREVIEW000000000000000000000000000000000',
+        pubkey:'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPREVIEW ipsense-agent-bridge:mh1-preview0001',
+        device:'预览演示设备',created_at:'2026-11-21T23:30:00+08:00',status:'active',
+        revoked_at:'',authorized_keys:'/home/user/.ssh/authorized_keys',key_on_device:true}];
+      d={ok:true,data:{version:1,grants:window.__ka,
+        note:'撤销只删除本应用带 ipsense-agent-bridge 标记的授权行与密钥副本，不动其它密钥'}};
+    }
+    else if(u.indexOf('api/keyauth/revoke')>=0){
+      var kr={}; try{ kr=JSON.parse((opt&&opt.body)||'{}'); }catch(eK){}
+      if(!window.__ka) window.__ka=[];
+      window.__ka=window.__ka.map(function(g){
+        if(g.id===kr.grant_id){ g.status='revoked'; g.key_on_device=false;
+          g.revoked_at='2026-11-21T23:40:00+08:00'; }
+        return g;});
+      d={ok:true,data:{version:1,grants:window.__ka,
+        note:'撤销只删除本应用带 ipsense-agent-bridge 标记的授权行与密钥副本，不动其它密钥'}};
+    }
+    else if(u.indexOf('api/mh/write')>=0){
+      var w={}; try{ w=JSON.parse((opt&&opt.body)||'{}'); }catch(eW){}
+      if(w.action==='prepare'){
+        var it0=ordersItems.filter(function(x){
+          return x.status==='pending'||x.status==='revert';})[0];
+        d=it0?{ok:true,data:{plan:{token:'tk-preview',ip:it0.ip,rev:it0.rev,
+          action:it0.status==='pending'?'mark-done':'restore',
+          from:it0.status,to:it0.status==='pending'?'done':'restored'},
+          confirm:'离线预览：确认请 mh commit --token tk-preview'}}
+          :{ok:false,msg:'旧回执被拒：找不到匹配的当前条目，请重新 mh read'};
+      } else if(w.action==='commit'){
+        var it1=ordersItems.filter(function(x){
+          return x.status==='pending'||x.status==='revert';})[0];
+        if(it1){
+          var from1=it1.status; it1.status=from1==='pending'?'done':'restored';
+          it1.summary=String(w.summary||''); it1.rev++;
+          it1.updated=Math.floor(Date.now()/1000);
+          it1.history.push({at:it1.updated,action:'commit',from:from1,
+            to:it1.status,by:'agent'});
+          ordersLog.unshift({at:it1.updated,ip:it1.ip,action:'commit',
+            from:from1,to:it1.status,by:'agent',summary:it1.summary});
+          d={ok:true,data:{ok:true,item:it1,
+            confirm:'离线预览：已确认 '+it1.ip+' → '+it1.status}};
+        } else d={ok:false,msg:'预备不存在或已过期，请重新 mh prepare'};
+      } else d={ok:true,data:{ok:true,discarded:true}};
+    }
+    else if(u.indexOf('api/orders')>=0){
+      if(opt && String(opt.method||'').toUpperCase()==='POST'){
+        var op={}; try{ op=JSON.parse((opt&&opt.body)||'{}'); }catch(eO){}
+        if(op.action==='clear'){ ordersItems=[]; ordersLog=[]; }
+        else if(op.action==='remove'){
+          ordersItems=ordersItems.filter(function(x){return x.ip!==op.ip;});
+        }
+        else if(op.action==='toggle'){
+          var itT=findOrderItem(op.ip); if(itT) itT.in_order=op.in_order!==false;
+        }
+        else if(op.action==='request-revert'){
+          var itR=findOrderItem(op.ip);
+          if(itR && (itR.status==='done'||itR.status==='restored')){
+            itR.status='revert'; itR.rev++; itR.updated=Math.floor(Date.now()/1000);
+            itR.history.push({at:itR.updated,action:'request-revert',
+              from:'done',to:'revert',by:'user'});
+            ordersLog.unshift({at:itR.updated,ip:itR.ip,action:'request-revert',
+              from:'done',to:'revert',by:'user',summary:''});
+          }
+        }
+        else if(op.action==='save'){
+          var itS=findOrderItem(op.ip);
+          if(!itS){ itS={ip:op.ip||'—',history:[],rev:0}; ordersItems.unshift(itS); }
+          itS.note=String(op.note||''); itS.status='pending'; itS.summary='';
+          itS.in_order=true; itS.evidence=op.evidence||{};
+          itS.updated=Math.floor(Date.now()/1000); itS.rev++;
+          itS.history.push({at:itS.updated,action:'save',from:'',
+            to:'pending',by:'user'});
+          ordersLog.unshift({at:itS.updated,ip:itS.ip,action:'save',from:'',
+            to:'pending',by:'user',summary:''});
+          ordersNote=itS.note;
+        }
+      }
+      d={ok:true,data:ordersSnap()};
+    }
+    else if(u.indexOf('api/health')>=0) d={ok:true,version:'1.1.29'};
     // 1.1.15：脱敏诊断包与区级手工补充
     else if(u.indexOf('api/diag/export')>=0) d=diagText;
-    // 1.1.21：运行时报错上报 / 查询 / 导出（export 必须排在 errors 之前）
+    // 1.1.29：运行时报错上报 / 查询 / 导出（export 必须排在 errors 之前）
     else if(u.indexOf('api/runtime/errors/export')>=0){
       window.__rtExportHits++;
       d=rtExportText;
@@ -455,7 +626,7 @@ window.addEventListener('error',function(e){
         d={ok:true,saved:posted.length,total:rtErrors.length};
       } else d={ok:true,data:rtErrors,total:rtErrors.length};
     }
-    // 1.1.21：站内查询（复用在线多源核验），不依赖第三方反爬页面
+    // 1.1.29：站内查询（复用在线多源核验），不依赖第三方反爬页面
     else if(u.indexOf('api/geo/verify')>=0) d={ok:true,cached:false,ip:'220.205.86.196',
       geo:{country:'中国',province:'安徽省',city:'合肥市',district:'蜀山区'},
       verification:{confidence:'high',online_sources:3,
@@ -515,7 +686,7 @@ def main():
         with open(os.path.join(UI, name), "r", encoding="utf-8") as f:
             return f.read()
     html = rd("index.html")
-    # 1.1.21：单文件预览页把投喂二维码内联成 data URI，否则 file:// 下
+    # 1.1.29：单文件预览页把投喂二维码内联成 data URI，否则 file:// 下
     # images/sponsor.png 相对路径失效，关于弹窗截图会显示破图占位。
     sponsor = os.path.join(UI, "images", "sponsor.png")
     if os.path.isfile(sponsor):

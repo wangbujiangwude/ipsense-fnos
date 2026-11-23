@@ -34,6 +34,7 @@
         <button data-r="30d">近30天</button>
       </div>
       <button class="btn ghost" id="btnRefresh" title="立即刷新">刷新</button>
+      <button class="btn ghost" id="btnOrders" title="查看已标注 IP 的提交单，并复制给外部 agent 的读取提示词">提交单<span class="orders-badge" id="ordersBadge" hidden></span></button>
       <button class="btn ghost" id="btnAbout">关于</button>
       <button class="btn primary" id="btnSettings">设置</button>
     </div>
@@ -208,7 +209,8 @@
 
   <footer>
     <span id="footMap">IP 动态感知 · 离线归属库 ip2region · 底图服务：—</span>
-    <span id="footInfo">数据源：本机日志 / fnOS 结构化审计 / SSH 轮转日志 / 路由器日志 / 端口敲门 · 归属：本地离线库 + 3 家在线源交叉校验 · 协议 / 来路 / 受访页 / 入口页来自 Nginx combined 日志 · 1.1.21 起三张地图合并为一张卡片，右上角可切换境外连线 / 境内连线 / 全球分布；1.1.20 起 IP 来源记录同秒同 IP 合并为一行、路径明细点开画像查看；1.1.19 起投喂二维码单独弹出并放大；1.1.18 起筛选范围下次打开保持、目标端口按日志证据多级补录、在线校验自动复制 IP 并支持站内查询；设置最底部可一键导出运行报错与运行日志诊断包，方便交给 AI 定位问题</span>
+    <span id="footInfo">1.1.29 起 skill 新增 mh setup 一步步引导，自动生成密钥对并配好 SSH；1.1.28 起密钥授权改为提交单右上角入口、点开才显示浮层；1.1.27 起新增密钥授权（用户可知、随时可撤销），agent 复制提示词后直接按标注执行、仅争议项二次确认，
+        处置走 fw CLI、mh 仍只改提交单状态；· 数据源：本机日志 / fnOS 结构化审计 / SSH 轮转日志 / 路由器日志 / 端口敲门 · 归属：本地离线库 + 3 家在线源交叉校验 · 协议 / 来路 / 受访页 / 入口页来自 Nginx combined 日志 · 1.1.26 起画像标注行只保留输入框，点它弹出写标注窗口完成保存；· 1.1.25 起提交单分「待处理 / 已完成 / 待撤回 / 全部」四区，读取提示词压成一句话加单独读取路径，规矩整合进 skill，AI 通过 mh 读写提交单状态（旧回执自动拒绝）；· 1.1.24 起标注输入框回归单行、点击弹出独立写标注窗口（带常用要求预设），四个弹层淡入淡出；1.1.23 起标注输入区点开放大、点击框外还原，提交单 / 关于 / 投喂入口加入弹出动画；1.1.22 起画像可给 IP 写标注并加入提交单，复制读取提示词交给外部 agent，软件永远不改防火墙设置；1.1.21 起三张地图合并为一张卡片，右上角可切换境外连线 / 境内连线 / 全球分布；1.1.20 起 IP 来源记录同秒同 IP 合并为一行、路径明细点开画像查看；1.1.19 起投喂二维码单独弹出并放大；1.1.18 起筛选范围下次打开保持、目标端口按日志证据多级补录、在线校验自动复制 IP 并支持站内查询；设置最底部可一键导出运行报错与运行日志诊断包，方便交给 AI 定位问题</span>
   </footer>
 </div>
 
@@ -254,6 +256,8 @@
         <li>地图 KEY 需自行申请，未配置时只显示不绘边界的坐标散点示意。</li>
         <li>归属结果为离线库与在线源交叉校验，仅供参考，不作处置依据。</li>
         <li>本应用不提供实时防护，请勿用于封 IP、改防火墙或自动处置。</li>
+        <li>软件<b>永远不改防火墙设置</b>：需要处置时，在「IP 来源画像」写标注加入提交单，复制读取提示词交给外部 agent 按标注直接执行（1.1.27 起仅争议项才二次确认）。</li>
+        <li>1.1.27 起提交单可查看密钥授权（指纹 / 公钥 / 时间 / 设备），1.1.28 起入口移到右上角，点开才显示；你随时可以撤销并删除设备上的私钥。</li>
         <li>提交 Issue 请用导出的脱敏文件，勿直接贴 config.json / events.db。</li>
       </ol>
 
@@ -285,6 +289,102 @@
     </div>
     <p class="sponsor-tip">点击二维码外任意处、点「关闭」或按 ESC 收起</p>
   </div>
+</div>
+<!-- 1.1.22 起：提交单弹层。应用只输出结构化证据，永远不改防火墙设置。
+     1.1.25 起：升级为四区看板（待处理 / 已完成 / 待撤回 / 全部），
+     读取提示词压成「一句话 + 读取路径」，规矩/流程搬到 skill，mh 为 agent 唯一手眼。
+     1.1.27 起：新增「密钥授权」（用户可知、随时可撤销）；agent 复制提示词后
+     直接按标注执行、仅争议项二次确认，处置走 fw CLI，mh 仍只改提交单状态。
+     1.1.28 起：密钥授权从 Tab 下方的内嵌区块改为右上角入口 + 点击浮层，
+     浮层 absolute 定位、不占弹层文档流，不同浏览器缩放下四区列表都不被挤压。 -->
+<div class="orders-mask" id="ordersMask">
+  <section class="orders-card" id="ordersCard" aria-hidden="true">
+    <div class="orders-head">
+      <div>
+        <h2>提交单</h2>
+        <p class="orders-sub">已标注的 IP 与你的要求 · 应用只观测，处置交给外部 agent</p>
+      </div>
+      <!-- 1.1.28：密钥授权入口固定在右上角「关闭」左侧，点开才显示浮层 -->
+      <div class="orders-head-actions">
+        <button type="button" class="link keyauth-entry" id="keyauthToggle"
+                aria-expanded="false" aria-controls="keyauthPanel">
+          密钥授权<span class="keyauth-count" id="keyauthCount">0</span>
+        </button>
+        <button class="link" id="ordersClose" type="button">关闭</button>
+      </div>
+    </div>
+    <div class="orders-tabs" id="ordersTabs" role="tablist">
+      <button type="button" class="orders-tab on" data-otab="pending">待处理<span class="tab-count" id="tabCountPending">0</span></button>
+      <button type="button" class="orders-tab" data-otab="done">已完成<span class="tab-count" id="tabCountDone">0</span></button>
+      <button type="button" class="orders-tab" data-otab="revert">待撤回<span class="tab-count" id="tabCountRevert">0</span></button>
+      <button type="button" class="orders-tab" data-otab="all">全部<span class="tab-count" id="tabCountAll">0</span></button>
+    </div>
+    <!-- 1.1.28：密钥授权浮层。absolute 定位、锚在右上角入口下方，不占弹层高度，
+         因此 90% / 100% / 125% 缩放下都不会挤压四区列表或把底部内容裁掉。
+         用户有权得知指纹 / 公钥 / 授权时间 / 设备，并可随时撤销
+         （删 authorized_keys 中本应用那行 + 删设备上的私钥副本）。 -->
+    <div class="keyauth-pop" id="keyauthPanel" hidden>
+      <div class="keyauth-pop-head">
+        <span>密钥授权</span>
+        <span class="keyauth-hint">用户可知 · 随时可撤销</span>
+      </div>
+      <div class="keyauth-list" id="keyauthList"><div class="empty">正在读取授权…</div></div>
+      <p class="keyauth-note">撤销会删除设备上的私钥副本与 authorized_keys 中本应用的授权行，不影响你其它密钥；撤销后 AI 需重新授权才能连接。</p>
+    </div>
+    <div class="orders-body" id="ordersList"><div class="empty">正在读取提交单…</div></div>
+    <div class="orders-foot">
+      <div class="orders-note">
+        本应用<b>永远不改防火墙设置</b>。复制提示词发给 agent 后<b>直接按你的标注执行</b>，
+        无需二次确认（仅争议项才问）；AI 用 <code>mh</code> 改提交单状态、<code>fw</code> 在 NAS 上做处置。
+        点右上角「密钥授权」可查看授权并随时撤销，撤销后 AI 立即失去连接能力。
+      </div>
+      <div class="orders-readpath">
+        <span id="ordersReadCmd">读取命令：mh read pending</span>
+        <button type="button" class="link" id="btnCopyPath">复制读取路径</button>
+      </div>
+      <div class="orders-actions">
+        <button class="btn primary" id="btnCopyPrompt" type="button">复制读取提示词</button>
+        <button class="btn ghost" id="btnOrdersClear" type="button" title="只清空提交单，不会改动任何防火墙规则">清空</button>
+      </div>
+      <div class="orders-path" id="ordersPath"></div>
+    </div>
+  </section>
+</div>
+<!-- 1.1.24：点「IP 来源画像」里的标注输入框弹出的独立写标注窗口。
+     输入框回归单行（不再在画像里原地放大），改成这里多行输入；
+     旁边预置几个「用户可能需要的操作」快捷要求，点一下把文字追加进输入框。
+     所有内容只是标注文字 / 给外部 agent 的要求，本应用永远不改防火墙设置、
+     不执行任何动作。 -->
+<div class="note-mask" id="noteMask">
+  <section class="note-card" id="noteCard" aria-hidden="true">
+    <div class="note-card-head">
+      <div>
+        <h2>给这个 IP 写标注</h2>
+        <p class="note-sub" id="noteSub"></p>
+      </div>
+      <button class="link" id="noteClose" type="button">关闭</button>
+    </div>
+    <div class="note-card-body">
+      <label class="note-field-label" for="noteDialogInput">写下你的要求（最多 500 字，只保存文字，不会执行）</label>
+      <textarea id="noteDialogInput" maxlength="500" autocomplete="off"
+        placeholder="例如：先观察 24 小时；若继续爆破，请外部 agent 评估后临时封禁并保留回滚"></textarea>
+      <div class="preset-label">常用要求 · 点一下追加到上面的输入框（可再编辑）</div>
+      <div class="preset-chips" id="notePresets">
+        <button type="button" class="preset-chip" data-preset="0">先观察 24 小时</button>
+        <button type="button" class="preset-chip" data-preset="1">持续异常再临时封禁</button>
+        <button type="button" class="preset-chip" data-preset="2">疑似误报 · 加白名单</button>
+        <button type="button" class="preset-chip" data-preset="3">交给 agent 判断</button>
+        <button type="button" class="preset-chip" data-preset="4">高危 · 优先核查</button>
+        <button type="button" class="preset-chip" data-preset="5">仅记录不处置</button>
+      </div>
+      <div class="note-dialog-tip">本应用<b>永远不改防火墙设置</b>，也不替你执行任何动作；以上内容只保存为标注，
+        随「提交单」与读取提示词交给外部 agent 自行判断与执行。</div>
+    </div>
+    <div class="note-card-foot">
+      <button class="btn primary" id="noteDialogSave" type="button">保存并加入提交单</button>
+      <button class="btn ghost" id="noteDialogCancel" type="button">取消</button>
+    </div>
+  </section>
 </div>
 <div id="toast" class="toast"></div>
 

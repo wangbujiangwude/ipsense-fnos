@@ -18,7 +18,7 @@ import urllib.parse
 import traceback
 
 APP_NAME = "ipsense"
-VERSION = "1.1.21"
+VERSION = "1.1.29"
 PREFIX = "/app/" + APP_NAME
 APP_DEST = os.environ.get("TRIM_APPDEST", "/var/apps/%s/target" % APP_NAME)
 VAR_DIR = os.environ.get("TRIM_PKGVAR") or "/vol1/@appdata/%s" % APP_NAME
@@ -40,6 +40,8 @@ from settings import Settings, MAP_KEY_PLACEHOLDER           # noqa: E402
 from geoip import GeoResolver                                # noqa: E402
 from geosource import GeoVerifier                            # noqa: E402
 from store import Store                                      # noqa: E402
+from orders import OrderBook                                 # noqa: E402
+from keyauth import KeyAuth                                  # noqa: E402
 from collector import Collector                              # noqa: E402
 from locate import current as locate_current, run as locate_run   # noqa: E402
 from diag import build_bundle                                       # noqa: E402
@@ -80,6 +82,12 @@ class App(object):
         self.rtlog = RuntimeLog(VAR_DIR)
         self.geo = GeoResolver(DATA_DIR)
         self.store = Store(DB_PATH, int(self.settings.get("keep_days", 30) or 30))
+        # 1.1.22：IP 标注 / 提交单。只读写 orders.json，不执行任何系统命令，
+        # 处置完全交给外部 agent；主包保持零权限、只观测。
+        self.orders = OrderBook(VAR_DIR, log)
+        # 1.1.27：密钥授权状态（用户可知 / 随时可撤销）。只管理带标记的
+        # authorized_keys 行与 keys/ 下自有密钥副本，不碰提交单、不碰防火墙。
+        self.keyauth = KeyAuth(VAR_DIR, log)
         # 1.0.9：升级后订正历史脏值（英文国名 / province=中国 / 坐标与省份脱钩）
         try:
             _norm = self.store.normalize_events()
@@ -531,6 +539,83 @@ def api(app, method, path, query, body):
                     r.get("referer") or "", r["action"], r["path"]]
             lines.append(",".join('"%s"' % str(v).replace('"', '""') for v in vals))
         return 200, ("\ufeff" + "\n".join(lines)).encode("utf-8"), "text/csv; charset=utf-8"
+    # 1.1.22 起：IP 标注 / 提交单 / 读取提示词（用户侧 UI 走这里）。
+    # 1.1.25 起：新增「待撤回」动作；提示词压成一句话 + 读取路径。
+    # 只读写 orders.json，绝不执行系统命令、绝不触碰防火墙；处置完全交给外部 agent。
+    if path == "/api/orders" and method == "POST":
+        try:
+            payload = json.loads(body.decode("utf-8", "replace") if isinstance(body, bytes)
+                                 else (body or "{}"))
+            if not isinstance(payload, dict):
+                raise ValueError("请求体必须是 JSON 对象")
+            act = str(payload.get("action") or "save")
+            if act == "save":
+                data = app.orders.save(payload.get("ip"), payload.get("note", ""),
+                                      payload.get("evidence") or {},
+                                      payload.get("in_order", True))
+            elif act == "toggle":
+                data = app.orders.toggle(payload.get("ip"), payload.get("in_order", True))
+            elif act == "remove":
+                data = app.orders.remove(payload.get("ip"))
+            elif act == "clear":
+                data = app.orders.clear()
+            elif act == "request-revert":
+                data = app.orders.request_revert(payload.get("ip"))
+            else:
+                raise ValueError("未知操作: %s" % act)
+            return 200, {"ok": True, "data": data}
+        except Exception as e:
+            return 400, {"ok": False, "msg": str(e)}
+    if path == "/api/orders":
+        return 200, {"ok": True, "data": app.orders.snapshot()}
+    if path == "/api/orders/prompt":
+        tab = str(p.get("tab") or "")
+        txt = app.orders.prompt(tab) if tab else app.orders.prompt()
+        return 200, txt.encode("utf-8"), "text/plain; charset=utf-8"
+
+    # ---- 1.1.25 · mh：外部 agent 唯一的「手和眼」----------------------------
+    # 读写严格分层：下面 4 个 GET 只读；只有 /api/mh/write 一个 POST 入口，
+    # 且只调用 OrderBook.mh_write（只改 orders.json 的提交单状态），
+    # 绝不触碰用户页面文件、配置、日志或任何防火墙 / 系统设施。
+    # 每次调用都是短命进程，状态全部落在 orders.json，不依赖长驻会话。
+    if path == "/api/mh/state" and method == "GET":
+        return 200, {"ok": True, "data": app.orders.mh_state(str(p.get("tab") or "pending"))}
+    if path == "/api/mh/show" and method == "GET":
+        try:
+            return 200, {"ok": True, "data": app.orders.mh_show(p.get("ip", ""))}
+        except ValueError as e:
+            return 400, {"ok": False, "msg": str(e)}
+    if path == "/api/mh/path" and method == "GET":
+        return 200, {"ok": True, "data": app.orders.mh_path()}
+    if path == "/api/mh/prompt" and method == "GET":
+        tab = str(p.get("tab") or "pending")
+        return 200, app.orders.prompt(tab).encode("utf-8"), "text/plain; charset=utf-8"
+    if path == "/api/mh/write" and method == "POST":
+        try:
+            payload = json.loads(body.decode("utf-8", "replace") if isinstance(body, bytes)
+                                 else (body or "{}"))
+            data = app.orders.mh_write(payload)
+            return 200, {"ok": True, "data": data}
+        except ValueError as e:
+            # 409：回执过期 / 状态冲突（乐观锁防串台），让 agent 明确知道要重读
+            return 409, {"ok": False, "msg": str(e)}
+        except Exception as e:
+            return 400, {"ok": False, "msg": str(e)}
+    # ---- 1.1.27 · 密钥授权：用户可知、随时可撤销 -----------------------
+    # 只读写 keyauth.json / authorized_keys 中本应用带标记的那一行，
+    # 不改 orders.json、不碰防火墙、不执行任何系统命令。
+    if path == "/api/keyauth/state" and method == "GET":
+        return 200, {"ok": True, "data": app.keyauth.state()}
+    if path == "/api/keyauth/revoke" and method == "POST":
+        try:
+            payload = json.loads(body.decode("utf-8", "replace") if isinstance(body, bytes)
+                                 else (body or "{}"))
+            data = app.keyauth.revoke((payload or {}).get("grant_id", ""))
+            return 200, {"ok": True, "data": data}
+        except ValueError as e:
+            return 400, {"ok": False, "msg": str(e)}
+        except Exception as e:
+            return 400, {"ok": False, "msg": str(e)}
     return 404, {"ok": False, "msg": "未知接口: %s" % path}
 
 
@@ -559,7 +644,7 @@ def static_file(rel):
 
 def send(conn, status, ctype, data):
     reason = {200: "OK", 400: "Bad Request", 404: "Not Found", 405: "Method Not Allowed",
-              500: "Internal Server Error"}.get(status, "OK")
+              409: "Conflict", 500: "Internal Server Error"}.get(status, "OK")
     head = ("HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\n"
             "Cache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\n"
             "Connection: close\r\n\r\n" % (status, reason, ctype, len(data)))

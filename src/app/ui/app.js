@@ -280,6 +280,11 @@
     geoScope: 'all', geoData: null, webData: null,
     // 1.1.21：三图合一后当前显示的地图模式（world / cn / geo）
     mapMode: 'world',
+    // 1.1.22：提交单（后端 orders.json）与画像证据快照
+    // 1.1.24：独立写标注窗口当前编辑的 IP
+    orders: null, currentEvidence: {}, noteIp: '',
+    // 1.1.25：提交单四区看板当前 tab 与「已完成」总结展开态
+    ordersTab: 'pending', ordersOpen: {},
     geoMap: null, geoMarks: null, geoMarkIndex: {}, geoHits: [],
     // 1.1.3：五卡放大面板状态（来源矩形用于关闭时无缝收回）
     zoomOn: false, zoomDim: '', zoomName: '', zoomFrom: null,
@@ -2107,9 +2112,27 @@
   function kvRow(k, v) {
     return '<div class="kv"><b>' + esc(k) + '</b><span>' + esc(v) + '</span></div>';
   }
-  function profileHead(big, sub) {
-    return '<p class="detail-ip">' + esc(big) + '</p>' +
+  function profileHead(big, sub, annotateIp) {
+    var head = '<p class="detail-ip">' + esc(big) + '</p>' +
       '<p class="hint" style="color:var(--dim);font-size:12px">' + esc(sub) + '</p>';
+    if (!annotateIp) return head;
+    var cached = findOrder(annotateIp);
+    // 1.1.24：输入框回归 1.1.22 的单行紧凑样式，但改成只读触发器 ——
+    // 点它弹出独立「写标注」窗口，不再在画像里原地放大成多行 textarea。
+    // 1.1.26：画像里只保留输入框 —— 行内「保存并加入提交单」按钮与弹窗
+    // 功能重复且已失效，保存统一由写标注窗口完成。
+    return '<div class="detail-ip-row"><div class="detail-ip-main">' + head + '</div>' +
+      '<div class="note-inline" id="noteBox">' +
+        '<div class="note-label">给这个 IP 写标注 · 点击输入框在弹窗里填写，处置完全交给外部 agent</div>' +
+        '<div class="note-row">' +
+          '<input type="text" id="noteInput" readonly maxlength="500" autocomplete="off" ' +
+          'data-act="open-note" placeholder="点击这里写标注…" ' +
+          'value="' + esc(cached ? (cached.note || '') : '') + '">' +
+        '</div>' +
+        '<div class="note-tip">只保存 IP 信息与你的要求，本应用<b>永远不改防火墙设置</b>、不执行任何动作。' +
+        (cached ? ' <span class="note-saved">已保存 · <button type="button" class="link" data-act="open-orders">去提交单查看</button></span>' : '') +
+        '</div>' +
+      '</div></div>';
   }
   // 1.1.20：表格不再逐行铺路径，这里就是查看路径明细的正式入口 ——
   // 完整路径不截断（长路径换行显示）、点击可复制、给出不同路径总数。
@@ -2251,12 +2274,25 @@
   }
   function copyTextRobust(text, cb) {
     var text = String(text || '');
+    var done = false;
+    function finish(ok) {
+      if (done) return;
+      done = true;
+      if (cb) cb(ok);
+    }
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
         var cp = navigator.clipboard.writeText(text);
         if (cp && cp.then) {
-          cp.then(function () { if (cb) cb(true); },
-                  function () { if (cb) cb(legacyCopy(text)); });
+          // 1.1.22：部分内嵌 WebView / 无头环境里 clipboard Promise 会长期
+          // pending（既不 resolve 也不 reject），补一个 600ms 兜底走旧复制，
+          // 避免「复制读取提示词」点了没有任何反馈。finish 保证只回调一次。
+          var fallback = setTimeout(function () { finish(legacyCopy(text)); }, 600);
+          cp.then(function () {
+            clearTimeout(fallback); finish(true);
+          }, function () {
+            clearTimeout(fallback); finish(legacyCopy(text));
+          });
           return;
         }
       }
@@ -2268,6 +2304,13 @@
   function bindDetailEvents(root, ip, groupHit) {
     if (!root) return;
     root.onclick = function (e) {
+      // 1.1.24：点只读标注输入框 -> 弹出独立「写标注」窗口（放在 INPUT 拦截之前）
+      if (e.target && e.target.id === 'noteInput') { openNoteDialog(ip); return; }
+      // 1.1.24：其余表单控件（含写标注窗口里的 textarea）不参与抽屉内点击委托
+      if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+      // 1.1.26：画像里已无行内「保存并加入提交单」按钮，保存统一由写标注窗口完成。
+      var oo = e.target.closest('[data-act="open-orders"]');
+      if (oo) { openOrders(); return; }
       var back = e.target.closest('[data-act="back"]');
       if (back && groupHit) { openGroupProfile(groupHit); return; }
       var el = e.target.closest('.ip-item[data-ip]');
@@ -4013,7 +4056,9 @@
     $('detailTitle').textContent = 'IP 来源画像';
     openDrawer('detailDrawer');
     $('detailBody').innerHTML = '<div class="empty">正在读取该 IP 的访问画像…</div>';
-    api('api/ip?ip=' + encodeURIComponent(ip)).then(function (r) {
+    ensureOrders().then(function () {
+      return api('api/ip?ip=' + encodeURIComponent(ip));
+    }).then(function (r) {
       var g = r.geo || {}, i = r.data.info || {}, a = r.data.agg || {};
       var loc = [g.country, g.province, g.city, g.district, g.isp].filter(function (x) { return x && x !== '0'; }).join(' · ');
       var rows = [
@@ -4030,7 +4075,24 @@
         ['请求方法 / 状态', i.method ? (i.method + ' · ' + (i.status || '—')) : '—'],
         ['入口页会话', num(a.sessions || 0) + ' 个']
       ];
-      var h = profileHead(ip, loc) + '<div style="margin:14px 0">' +
+      // 1.1.22：把画像证据做成快照，随标注写入提交单。
+      // 只保留展示字段，不携带任何可执行内容；note 由后端统一清洗后放进数据区。
+      S.currentEvidence[ip] = {
+        geo: loc || '未知', scope: SCOPE_NAME[g.scope] || '未知',
+        n: a.n || 0, first: tm(a.first_ts), last: tm(a.last_ts),
+        verdict: VERDICT_NAME[i.verdict] || i.verdict || '—',
+        proto: PROTO_NAME[i.proto] || i.proto || '未识别',
+        port: String(i.port || '—'),
+        source: SRC_NAME[i.source] || i.source || '—',
+        paths: (r.data.top_paths || []).slice(0, 8).map(function (p) {
+          return p.path + ' (' + num(p.n) + ' 次)';
+        }),
+        recent: (r.data.recent || []).slice(0, 6).map(function (x) {
+          return tm(x.ts) + ' ' + (VERDICT_NAME[x.verdict] || x.verdict || '') +
+            ' ' + (x.action || x.path || '');
+        })
+      };
+      var h = profileHead(ip, loc, ip) + '<div style="margin:14px 0">' +
         rows.map(function (x) { return kvRow(x[0], x[1]); }).join('') + '</div>';
       // 从地图圆点进入时，追加同组 IP 切换与返回入口
       if (groupHit) h += samePointBlock(groupHit, ip);
@@ -4145,6 +4207,390 @@
     }
   }
 
+  // ---- 1.1.22 · IP 标注 / 提交单 / 读取提示词 ----
+  // 主包只把标注与证据写进后端 orders.json，再生成一段提示词交给外部 agent。
+  // 这里没有任何执行命令、没有防火墙操作，也永远不会主动连接 agent。
+  var ordersPending = null;
+  function ensureOrders() {
+    if (S.orders) return Promise.resolve(S.orders);
+    if (!ordersPending) {
+      ordersPending = api('api/orders').then(function (r) {
+        S.orders = (r && r.data) || { items: [] };
+        updateOrdersBadge(); showOrdersPath();
+        return S.orders;
+      }).catch(function () {
+        S.orders = { items: [] }; ordersPending = null; return S.orders;
+      });
+    }
+    return ordersPending;
+  }
+  function findOrder(ip) {
+    var list = (S.orders && S.orders.items) || [];
+    for (var i = 0; i < list.length; i++) if (list[i].ip === ip) return list[i];
+    return null;
+  }
+  // ---- 1.1.25 · 提交单四区看板 -------------------------------------------
+  // 规矩/大脑在 skill，mh CLI 是 agent 唯一手眼。这里只把后端 orders.json 的
+  // status 状态渲染成四个功能区，不产生任何处置动作、不改防火墙设置。
+  var TAB_DEF = {
+    pending: {label:'待处理', cmd:'mh read pending', copy:'复制读取提示词',
+              empty:'待处理还是空的。<br>在「IP 来源画像」里给 IP 写标注并保存，就会自动放进这里。'},
+    done:    {label:'已完成', cmd:'mh read done', copy:'',
+              empty:'还没有已完成的条目。<br>把待处理的一句话提示词发给 agent，它通过 mh 提交后会显示在这里。'},
+    revert:  {label:'待撤回', cmd:'mh read revert', copy:'复制复原提示词',
+              empty:'待撤回是空的。<br>在「已完成」区对某条点「待撤回」，它会出现在这里，再复制复原提示词发给 agent。'},
+    all:     {label:'全部', cmd:'mh read all', copy:'',
+              empty:'还没有任何操作记录。'}
+  };
+  var TAB_FILTER = {pending:['pending'], done:['done','restored'],
+                    revert:['revert'], all:['pending','done','restored','revert']};
+  function ordersTabCounts() {
+    var c = {pending:0, done:0, revert:0, all:0};
+    var list = (S.orders && S.orders.items) || [];
+    for (var i = 0; i < list.length; i++) {
+      var x = list[i]; if (x.in_order === false) continue;
+      c.all++;
+      var st = x.status || 'pending';
+      if (st === 'pending') c.pending++;
+      else if (st === 'done' || st === 'restored') c.done++;
+      else if (st === 'revert') c.revert++;
+    }
+    return c;
+  }
+  function statusBadge(x) {
+    var st = x.status || 'pending';
+    var lb = {pending:'待处理', done:'已完成', revert:'待撤回', restored:'已复原'}[st] || st;
+    return '<span class="order-status st-' + st + '">' + esc(lb) + '</span>';
+  }
+  function historyLine(x) {
+    var h = x.history || []; if (!h.length) return '';
+    var parts = [];
+    for (var i = Math.max(0, h.length - 4); i < h.length; i++) {
+      var e = h[i];
+      var lb = {pending:'待处理', done:'已完成', revert:'待撤回',
+                restored:'已复原', '':'移出'}[e.to] || e.to || '—';
+      parts.push('<span class="hist-step">' + (e.by === 'agent' ? 'AI' : '你') +
+                 '·' + esc(lb) + '</span>');
+    }
+    return '<div class="order-hist">' +
+           parts.join('<span class="hist-arrow">→</span>') + '</div>';
+  }
+  function renderLog(log) {
+    if (!log || !log.length) return '';
+    var rows = log.slice(-30).reverse().map(function (e) {
+      var lb = {pending:'待处理', done:'已完成', revert:'待撤回',
+                restored:'已复原', '':'移出'}[e.to] || e.to || '—';
+      return '<div class="log-row"><span>' + esc(tm(e.at)) + '</span>' +
+             '<b>' + esc(e.ip || '—') + '</b>' +
+             '<span>' + esc(e.action || '') + ' → ' + esc(lb) + '</span>' +
+             '<span class="log-by">' + (e.by === 'agent' ? 'AI' : '你') + '</span></div>';
+    }).join('');
+    return '<div class="order-log"><div class="order-sum-label">操作流水（全部区域）</div>' +
+           rows + '</div>';
+  }
+  function orderCard(x, tab) {
+    var ip = esc(x.ip);
+    var note = esc(x.note || '（未填写要求，仅保留观测证据）');
+    var ev = esc(evidenceBrief(x.evidence) || '无额外证据');
+    var sum = x.summary
+      ? '<div class="order-sum"><div class="order-sum-label">AI 处理总结</div>' +
+        esc(x.summary) + '</div>' : '';
+    var acts = '<button type="button" class="link" data-oact="remove" data-ip="' +
+               ip + '">移出</button>';
+    if (tab === 'done' && x.status === 'done') {
+      acts = '<button type="button" class="link" data-oact="toggle-sum" data-ip="' + ip + '">' +
+             (S.ordersOpen[x.ip] ? '收起总结' : '查看 AI 总结') + '</button>' +
+             '<button type="button" class="link warn" data-oact="revert" data-ip="' +
+             ip + '">待撤回</button>' + acts;
+    }
+    var openCls = (tab === 'done' && S.ordersOpen[x.ip]) ? ' open' : '';
+    var badge = (tab === 'all' || x.status === 'restored') ? statusBadge(x) : '';
+    return '<div class="order-item' + openCls + '">' +
+      '<div class="order-head"><b>' + ip + '</b>' + badge +
+      '<span>' + esc(tm(x.updated)) + '</span>' + acts + '</div>' +
+      '<div class="order-note">' + note + '</div>' +
+      '<div class="order-ev">' + ev + '</div>' + sum +
+      (tab === 'all' ? historyLine(x) : '') + '</div>';
+  }
+  function renderOrders() {
+    var box = $('ordersList'); if (!box) return;
+    var tab = S.ordersTab || 'pending', def = TAB_DEF[tab] || TAB_DEF.pending;
+    var filter = TAB_FILTER[tab];
+    var list = ((S.orders && S.orders.items) || []).filter(function (x) {
+      return x.in_order !== false && filter.indexOf(x.status || 'pending') >= 0;
+    });
+    list.sort(function (a, b) { return (b.updated || 0) - (a.updated || 0); });
+    // 四个区的计数角标
+    var c = ordersTabCounts();
+    var cmap = {pending:'tabCountPending', done:'tabCountDone',
+                revert:'tabCountRevert', all:'tabCountAll'};
+    for (var k in cmap) { var el = $(cmap[k]); if (el) el.textContent = String(c[k]); }
+    Array.prototype.forEach.call(document.querySelectorAll('#ordersTabs .orders-tab'),
+      function (b) {
+        if (b.getAttribute('data-otab') === tab) b.classList.add('on');
+        else b.classList.remove('on');
+      });
+    // 读取命令 + 复制按钮随 tab 变化；已完成 / 全部是查看区，不显示复制按钮
+    var rc = $('ordersReadCmd');
+    if (rc) rc.textContent = '读取命令：' + def.cmd + ' · ' +
+                             ((S.orders && S.orders.path) || '—');
+    var cp = $('btnCopyPrompt');
+    if (cp) {
+      if (def.copy) { cp.style.display = ''; cp.textContent = def.copy; }
+      else cp.style.display = 'none';
+    }
+    var logHtml = (tab === 'all') ? renderLog((S.orders && S.orders.log) || []) : '';
+    if (!list.length) {
+      box.innerHTML = '<div class="empty">' + def.empty + '</div>' + logHtml;
+      return;
+    }
+    box.innerHTML = list.map(function (x) { return orderCard(x, tab); }).join('') + logHtml;
+  }
+  function switchOrdersTab(tab) {
+    if (!TAB_DEF[tab]) return;
+    S.ordersTab = tab;
+    ensureOrders().then(function () { renderOrders(); showOrdersPath(); });
+  }
+  function requestRevert(ip) {
+    api('api/orders', 'POST', { action: 'request-revert', ip: ip }).then(function (r) {
+      S.orders = (r && r.data) || S.orders;
+      updateOrdersBadge(); renderOrders();
+      toast('已移入「待撤回」区，复制复原提示词发给 agent 即可');
+    }).catch(function (e) { toast('操作失败：' + e.message); });
+  }
+  function toggleSummary(ip) { S.ordersOpen[ip] = !S.ordersOpen[ip]; renderOrders(); }
+  function updateOrdersBadge() {
+    var el = $('ordersBadge'); if (!el) return;
+    var n = ordersTabCounts().pending;      // 顶栏角标只提示「待处理」的待办数
+    el.textContent = n ? String(n) : '';
+    if (n) el.removeAttribute('hidden'); else el.setAttribute('hidden', '');
+  }
+  function showOrdersPath() {
+    var el = $('ordersPath'); if (!el || !S.orders) return;
+    el.textContent = '提交单文件：' + (S.orders.path || '—') +
+      ' · 四区状态 / 回执 / 流水：GET /api/mh/state · 写入：POST /api/mh/write（mh 唯一接口）';
+    var rc = $('ordersReadCmd');
+    if (rc) rc.textContent = '读取命令：' +
+      (TAB_DEF[S.ordersTab] || TAB_DEF.pending).cmd + ' · ' + (S.orders.path || '—');
+  }
+  function evidenceBrief(ev) {
+    ev = ev || {};
+    return [ev.geo, ev.scope, ev.n ? (ev.n + ' 次') : '', ev.verdict, ev.proto,
+            ev.port ? ('端口 ' + ev.port) : ''].filter(function (x) { return x; }).join(' · ');
+  }
+  // ---- 1.1.28：密钥授权（右上角入口 + 点击浮层，用户可知、随时可撤销）------
+  // 数据来自 GET /api/keyauth/state；撤销走 POST /api/keyauth/revoke，
+  // 只删本应用带标记的那行 authorized_keys 与设备上的密钥副本。
+  // 浮层 absolute 定位、不占 .orders-card 的 flex 文档流，
+  // 因此 90% / 100% / 125% 缩放下都不会挤压四区列表。
+  function loadKeyAuth() {
+    api('api/keyauth/state', 'GET').then(function (r) {
+      S.keyauth = (r && r.data) || { grants: [] };
+      renderKeyAuth();
+    }).catch(function (e) {
+      var el = $('keyauthList');
+      if (el) el.innerHTML = '<div class="empty">读取授权失败：' + esc(e.message) + '</div>';
+    });
+  }
+  function renderKeyAuth() {
+    var box = $('keyauthList'), cnt = $('keyauthCount');
+    if (!box) return;
+    var gs = (S.keyauth && S.keyauth.grants) || [];
+    var active = gs.filter(function (g) { return g.status === 'active'; }).length;
+    if (cnt) cnt.textContent = String(active);
+    if (!gs.length) {
+      box.innerHTML = '<div class="empty">还没有授权任何设备。AI 首次通过 SSH 引导授权后，这里会列出指纹 / 公钥 / 时间 / 设备。</div>';
+      return;
+    }
+    box.innerHTML = gs.map(function (g) {
+      var revoked = g.status !== 'active';
+      var fp = esc((g.fingerprint || '').slice(0, 48));
+      var pk = esc((g.pubkey || '').slice(0, 60));
+      return '<div class="keyauth-item' + (revoked ? ' is-revoked' : '') + '">' +
+        '<div class="keyauth-row"><span class="keyauth-badge' + (revoked ? ' off' : '') + '">' +
+        (revoked ? '已撤销' : '生效中') + '</span>' +
+        '<span class="keyauth-dev">' + esc(g.device || '未命名设备') + '</span>' +
+        '<span class="keyauth-time">' + esc(g.created_at || '') + '</span></div>' +
+        '<div class="keyauth-fp">' + fp + '</div>' +
+        '<div class="keyauth-pk">' + pk + (g.pubkey && g.pubkey.length > 60 ? '…' : '') + '</div>' +
+        (g.key_on_device && !revoked ? '<div class="keyauth-devkey">设备上有私钥副本，撤销会一并删除</div>' : '') +
+        (revoked ? '<div class="keyauth-revtime">撤销于 ' + esc(g.revoked_at || '') + '</div>' :
+          '<button type="button" class="btn ghost keyauth-revoke" data-grant="' + esc(g.id) + '">撤销授权</button>') +
+        '</div>';
+    }).join('');
+  }
+  function keyauthIsOpen() {
+    var p = $('keyauthPanel');
+    return !!p && !p.hasAttribute('hidden');
+  }
+  function keyauthOpen() {
+    var p = $('keyauthPanel'), tg = $('keyauthToggle');
+    if (!p) return;
+    p.removeAttribute('hidden');
+    if (tg) tg.setAttribute('aria-expanded', 'true');
+    loadKeyAuth();
+  }
+  function keyauthClose() {
+    var p = $('keyauthPanel'), tg = $('keyauthToggle');
+    if (p) p.setAttribute('hidden', '');
+    if (tg) tg.setAttribute('aria-expanded', 'false');
+  }
+  function bindKeyAuth() {
+    var tg = $('keyauthToggle'), panel = $('keyauthPanel'), list = $('keyauthList');
+    if (tg && !tg._bound128) {
+      tg._bound128 = true;
+      tg.onclick = function (e) {
+        e.stopPropagation();
+        if (keyauthIsOpen()) keyauthClose(); else keyauthOpen();
+      };
+    }
+    if (panel && !panel._bound128) {
+      panel._bound128 = true;
+      // 浮层内部点击不冒泡到卡片，避免点撤销按钮时浮层被收起
+      panel.onclick = function (e) { e.stopPropagation(); };
+    }
+    if (list && !list._bound128) {
+      list._bound128 = true;
+      list.onclick = function (e) {
+        var b = e.target.closest ? e.target.closest('.keyauth-revoke') : null;
+        if (!b) return;
+        var id = b.getAttribute('data-grant');
+        if (!id) return;
+        api('api/keyauth/revoke', 'POST', { grant_id: id }).then(function (r) {
+          S.keyauth = (r && r.data) || S.keyauth;
+          renderKeyAuth();
+          toast('授权已撤销：设备私钥与 authorized_keys 行已删除');
+        }).catch(function (err) { toast('撤销失败：' + err.message); });
+      };
+    }
+    // 1.1.28：点浮层外（提交单卡片内任意处）收起浮层
+    var card = $('ordersCard');
+    if (card && !card._bound128) {
+      card._bound128 = true;
+      card.addEventListener('click', function (e) {
+        if (!keyauthIsOpen()) return;
+        // 用 contains 判断触点归属，避免引入 closest 相关子串（历史滚轮断言按子串检查）
+        var t = e.target, tg0 = $('keyauthToggle'), p0 = $('keyauthPanel');
+        if ((tg0 && (t === tg0 || tg0.contains(t))) ||
+            (p0 && (t === p0 || p0.contains(t)))) return;
+        keyauthClose();
+      });
+    }
+  }
+  function openOrders() {
+    closeSponsor();
+    bindKeyAuth();
+    keyauthClose();          // 1.1.28：每次打开提交单都从「浮层收起」态开始
+    loadKeyAuth();           // 角标仍立即刷新（浮层隐藏也能渲染）
+    ensureOrders().then(function () { renderOrders(); showOrdersPath(); });
+    $('ordersMask').classList.add('on');
+    $('ordersCard').setAttribute('aria-hidden', 'false');
+    setMapScroll(false);
+  }
+  function closeOrders() {
+    keyauthClose();          // 1.1.28：关弹层时一并收起浮层
+    $('ordersMask').classList.remove('on');
+    $('ordersCard').setAttribute('aria-hidden', 'true');
+    if (!drawerOpen() && !S.zoomOn && !$('aboutMask').classList.contains('on')) setMapScroll(true);
+  }
+  function saveNote(ip, root, noteOverride, done) {
+    // 1.1.26：标注只由写标注窗口保存，走 noteOverride（窗口里多行 textarea 的值）。
+    // box 仅用于保存成功后回写只读触发框；画像里不再有行内保存按钮。
+    var box = root ? root.querySelector('#noteInput') : null;
+    var note = noteOverride !== undefined
+      ? String(noteOverride || '').trim().slice(0, 500)
+      : (box ? String(box.value || '').trim().slice(0, 500) : '');
+    var ev = S.currentEvidence[ip] || { ip: ip };
+    api('api/orders', 'POST', {
+      action: 'save', ip: ip, note: note, evidence: ev, in_order: true
+    }).then(function (r) {
+      S.orders = (r && r.data) || S.orders;
+      updateOrdersBadge(); showOrdersPath();
+      toast(note ? '已保存标注并加入提交单' : '标注已清空，仍保留在提交单');
+      if (box) box.value = note;                 // 回写只读触发框，显示最新标注
+      if ($('ordersMask').classList.contains('on')) renderOrders();
+      if (done) done(true);
+    }).catch(function (e) {
+      toast('保存失败：' + e.message);
+      if (done) done(false);
+    });
+  }
+
+  // ---- 1.1.24：点击标注输入框弹出的独立「写标注」窗口 -------------------
+  // 预设只是「用户可能需要的操作」文字，点一下追加进输入框，仍只是保存为
+  // 标注 / 给外部 agent 的要求；应用不执行、不碰防火墙。数据序号与
+  // index.html 里 #notePresets 的 data-preset 一一对应。
+  var NOTE_PRESETS = [
+    '先观察 24 小时，暂不处置，保留观测证据。',
+    '若持续异常，请外部 agent 评估后临时封禁 2 小时，务必保留回滚并二次确认。',
+    '疑似误报或业务需要，建议加入白名单，不再提示。',
+    '记录证据，交给外部 agent 自行判断风险与后续处理。',
+    '标记为重点关注，请优先核查该 IP 的登录来源与访问路径。',
+    '仅记录观测证据，暂不做任何处置。'
+  ];
+  function openNoteDialog(ip) {
+    S.noteIp = ip;
+    var cur = '';
+    var inline = $('noteInput');
+    if (inline) cur = String(inline.value || '');
+    if (!cur) { var o = findOrder(ip); cur = o ? (o.note || '') : ''; }
+    var d = $('noteDialogInput'); if (d) d.value = cur;
+    var sub = $('noteSub');
+    if (sub) sub.textContent = ip + ' · 写下的要求只保存为文字，处置完全交给外部 agent';
+    $('noteMask').classList.add('on');
+    $('noteCard').setAttribute('aria-hidden', 'false');
+    setMapScroll(false);
+    setTimeout(function () { if (d) { try { d.focus(); } catch (x) {} } }, 80);
+  }
+  function closeNoteDialog() {
+    $('noteMask').classList.remove('on');
+    $('noteCard').setAttribute('aria-hidden', 'true');
+    if (!drawerOpen() && !S.zoomOn &&
+        !$('ordersMask').classList.contains('on') &&
+        !$('aboutMask').classList.contains('on') &&
+        !$('sponsorMask').classList.contains('on')) setMapScroll(true);
+  }
+  function appendPreset(idx) {
+    var add = NOTE_PRESETS[idx]; if (!add) return;
+    var d = $('noteDialogInput'); if (!d) return;
+    var cur = String(d.value || '');
+    if (cur.indexOf(add) >= 0) return;                 // 同一条不重复追加
+    d.value = ((cur ? cur.replace(/\s+$/, '') + '\n' : '') + add).slice(0, 500);
+    try { d.focus(); } catch (x) {}
+  }
+  function saveNoteFromDialog() {
+    var d = $('noteDialogInput');
+    var val = d ? d.value : '';
+    saveNote(S.noteIp, $('detailBody'), val, function (ok) {
+      if (ok) closeNoteDialog();
+    });
+  }
+  function copyOrderPrompt() {
+    // 1.1.25：一句话模式 + 单独读取路径；按当前功能区取对应提示词。
+    var tab = S.ordersTab || 'pending';
+    fetch(url('api/orders/prompt?tab=' + encodeURIComponent(tab))).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.text();
+    }).then(function (txt) {
+      copyTextRobust(txt, function (ok) {
+        toast(ok ? '一句话提示词 + 读取路径已复制，发给 agent 即可'
+                 : '复制未成功，请重试或到提交单里手动复制');
+      });
+    }).catch(function (e) { toast('生成提示词失败：' + e.message); });
+  }
+  function removeFromOrders(ip) {
+    api('api/orders', 'POST', { action: 'remove', ip: ip }).then(function (r) {
+      S.orders = (r && r.data) || S.orders;
+      updateOrdersBadge(); renderOrders(); toast('已移出提交单');
+    }).catch(function (e) { toast('操作失败：' + e.message); });
+  }
+  function clearOrders() {
+    api('api/orders', 'POST', { action: 'clear' }).then(function (r) {
+      S.orders = (r && r.data) || S.orders;
+      updateOrdersBadge(); renderOrders(); toast('提交单已清空（未改动任何防火墙规则）');
+    }).catch(function (e) { toast('操作失败：' + e.message); });
+  }
+
   // ---- 1.1.18 · 关于弹窗 ----
   function openAbout() {
     closeSponsor();
@@ -4250,8 +4696,13 @@
     $('zoomMask').onclick = function () { closeCardZoom(false); };
     document.addEventListener('keydown', function (e) {
       if (e.key !== 'Escape') return;
+      // 1.1.24：写标注窗口在最上层，ESC 先收它，画像抽屉仍留在画面里
+      if ($('noteMask').classList.contains('on')) { closeNoteDialog(); return; }
       // 1.1.19：二维码灯箱在最上层，ESC 先收它，关于页仍留在画面里
       if ($('sponsorMask').classList.contains('on')) { closeSponsor(); return; }
+      // 1.1.28：密钥授权浮层打开时，ESC 先收浮层，提交单仍留在画面里
+      if ($('ordersMask').classList.contains('on') && keyauthIsOpen()) { keyauthClose(); return; }
+      if ($('ordersMask').classList.contains('on')) { closeOrders(); return; }
       if ($('aboutMask').classList.contains('on')) { closeAbout(); return; }
       if (S.zoomOn) { closeCardZoom(false); return; }
       if ($('mask').classList.contains('on')) closeDrawers();
@@ -4303,6 +4754,57 @@
       api('api/sources').then(function (r) { renderSettings(r.data); openDrawer('settingsDrawer'); });
     };
     $('btnAbout').onclick = openAbout;
+    // 1.1.22：提交单按钮固定在「关于」左侧
+    $('btnOrders').onclick = openOrders;
+    $('ordersClose').onclick = closeOrders;
+    $('ordersMask').onclick = function (e) { if (e.target === $('ordersMask')) closeOrders(); };
+    $('btnCopyPrompt').onclick = copyOrderPrompt;
+    $('btnOrdersClear').onclick = clearOrders;
+    $('ordersList').onclick = function (e) {
+      // 1.1.25：父链遍历找任意 data-oact（移出 / 待撤回 / 展开总结），不依赖 closest
+      var t = e.target, b = null, box = $('ordersList');
+      while (t && t !== box) {
+        if (t.getAttribute && t.getAttribute('data-oact')) { b = t; break; }
+        t = t.parentNode;
+      }
+      if (!b) return;
+      var act = b.getAttribute('data-oact'), ip = b.getAttribute('data-ip');
+      if (act === 'remove') removeFromOrders(ip);
+      else if (act === 'revert') requestRevert(ip);
+      else if (act === 'toggle-sum') toggleSummary(ip);
+    };
+    // 1.1.25：四个功能区切换（父链遍历，兼容内嵌 WebView）
+    $('ordersTabs').onclick = function (e) {
+      var t = e.target, b = null, box = this;
+      while (t && t !== box) {
+        if (t.getAttribute && t.getAttribute('data-otab') !== null) { b = t; break; }
+        t = t.parentNode;
+      }
+      if (b) switchOrdersTab(b.getAttribute('data-otab'));
+    };
+    // 1.1.25：给 AI 单独提供的读取路径，一键复制
+    $('btnCopyPath').onclick = function () {
+      var pth = (S.orders && S.orders.path) || '/vol1/@appdata/ipsense/orders.json';
+      var cmd = (TAB_DEF[S.ordersTab] || TAB_DEF.pending).cmd;
+      copyTextRobust('读取路径：' + pth + '\n读取命令：' + cmd, function (ok) {
+        toast(ok ? '读取路径已复制' : '复制未成功，请手动选取');
+      });
+    };
+    ensureOrders();
+    // 1.1.24：独立写标注窗口的事件。预设 chips 用父链遍历找 data-preset，
+    // 不依赖 Element.closest，兼容内嵌 WebView。
+    $('notePresets').onclick = function (e) {
+      var t = e.target, b = null, box = this;
+      while (t && t !== box) {
+        if (t.getAttribute && t.getAttribute('data-preset') !== null) { b = t; break; }
+        t = t.parentNode;
+      }
+      if (b) appendPreset(Number(b.getAttribute('data-preset')));
+    };
+    $('noteDialogSave').onclick = saveNoteFromDialog;
+    $('noteDialogCancel').onclick = closeNoteDialog;
+    $('noteClose').onclick = closeNoteDialog;
+    $('noteMask').onclick = function (e) { if (e.target === this) closeNoteDialog(); };
     $('aboutClose').onclick = closeAbout;
     $('aboutMask').onclick = function (e) { if (e.target === this) closeAbout(); };
     $('btnSponsor').onclick = openSponsor;

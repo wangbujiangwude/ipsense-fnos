@@ -1,0 +1,13 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""fw 可执行入口：等价于 `python fw.py`，方便放进 PATH 后直接敲 fw 命令。
+
+真正的实现只有 scripts/fw.py 一份；本文件不含任何逻辑，保证「处置通道」不分叉。
+"""
+import os
+import runpy
+import sys
+
+sys.argv[0] = "fw"
+runpy.run_path(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fw.py"),
+               run_name="__main__")

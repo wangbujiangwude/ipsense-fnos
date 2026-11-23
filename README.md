@@ -4,7 +4,7 @@
 
 > **只观测、不封禁、不改防火墙、不自动处置。**
 > 它只读取、汇总、展示「谁在访问我的设备」，不做实时防护、不改规则，也不会自动处置任何来源。
-> **软件永远不改防火墙设置**：需要封禁时由外部 agent 自行判断与执行，本应用不持有任何处置权限；后续版本将提供 IP 标注、提交单与提示词导出，只输出结构化证据。
+> **软件永远不改防火墙设置**：需要封禁时由外部 agent 自行判断与执行，本应用不持有任何处置权限；IP 标注、提交单与提示词导出只输出结构化证据，不执行任何处置。
 
 ## 它能做什么
 
@@ -24,11 +24,107 @@
 
 | 文件 | 适用 |
 |---|---|
-| `ipsense_1.1.21_all.fpk` | 通用包，x86 / ARM64 均可 |
-| `ipsense_1.1.21_x86.fpk` | x86_64 设备 |
-| `ipsense_1.1.21_arm.fpk` | ARM64 设备 |
+| `ipsense_1.1.29_all.fpk` | 通用包，x86 / ARM64 均可 |
+| `ipsense_1.1.29_x86.fpk` | x86_64 设备 |
+| `ipsense_1.1.29_arm.fpk` | ARM64 设备 |
 
 三个包内容一致，选与设备架构对应的即可。装完打开就能看：默认开启本机日志、路由器日志与 fnOS 审计三路，其余数据源在设置里按需开启。地图密钥需自行申请，未配置时前端只画坐标散点示意。
+
+## 让 agent 接管处置（可选，与 FPK 独立）
+
+应用本身**只观测、不封禁、不改防火墙**；提交单里的标注由外部 agent 通过 SSH 在 NAS 上执行。
+**应用（FPK）与 skill 是两个独立产物，都要装，缺一不可。**
+
+### 1. 装 skill 包
+
+把 `skills/ipsense-agent-bridge/` 整个目录放进 agent 的 skills 目录
+（WorkBuddy 是 `~/.workbuddy/skills/ipsense-agent-bridge/`）。最小必需 4 个文件：
+`SKILL.md`、`scripts/mh.py`、`scripts/fw.py`，加两个可选 shim `scripts/mh` / `scripts/fw`。
+完整安装说明内置在该包的 `SKILL.md`「0.5 安装与首次配置」，无需依赖本仓库其它文档。
+
+前置：Python 3.8+、`curl`、`ssh`；**`fw` 与 `mh setup` 的 SSH 引导都必需
+`paramiko`**（`pip install paramiko`），即便 `auth=key` 也一样（`mode=local` 除外）。
+
+> 以下命令均在 skill 目录下执行；从别处调用请把 `scripts/` 换成
+> `<skill>/scripts/`。Windows 下直接用 `python <skill>/scripts/mh.py ...`，
+> **不要裸敲 `mh`**——无扩展名 shim 不可直接执行，且 PATH 里可能已有同名程序
+> （实测 `MotionHarness.exe`）。文档里的 `mh read pending` 是逻辑命令，参数照搬即可。
+
+### 2. 配置方法：新用户跑 `mh setup`（一步步引导）
+
+`mh setup` 自动生成 ed25519 公钥私钥、配好 SSH、建立可撤销授权、写好
+`~/.ipsense/bridge.json` 并跑完验证，8 步、每步打印 `[n/8]`。
+**私钥只进内存与本机文件，绝不打印、不进 UI / 报告 / 日志。**
+
+```bash
+# 先演练：不连 NAS、不改任何文件、不生成密钥
+python scripts/mh.py setup --dry-run --host <NAS地址> --user <SSH用户>
+
+# A. 新用户最常见：只有 SSH 账号密码
+python scripts/mh.py setup --host 192.168.1.10 --user root --bootstrap password
+
+# B. 已有可用私钥，想补一份本应用专用授权
+python scripts/mh.py setup --host 192.168.1.10 --user root \
+  --bootstrap key --key ~/.ssh/id_ed25519
+
+# C. agent 就装在这台 NAS 上（无需 SSH）
+python scripts/mh.py setup --bootstrap local
+
+# D. 交互模式：一步步问 host / user / port / 密码
+python scripts/mh.py setup
+```
+
+参数：`--port 22`、`--device <设备名>`、`--force`（已有 active 授权也重建）、
+`--yes`（强制非交互）、`--dry-run`。
+密码只从环境变量 `IPSENSE_SSH_PASSWORD` / `OESP_PASS` 或
+`~/.workbuddy/secrets/oesp_cred.txt` 读，**绝不写进配置、日志或聊天**。
+非交互缺 `--host` 只打印示例退出，不会卡在 `input()`；已有 active 授权默认跳过，
+避免重复授权。fnOS 实测 `$HOME` 目录名可不同于 SSH 用户名，setup 会动态读 `$HOME`。
+
+> 高级 / 手动：只需写连接配置、不建密钥授权时用
+> `python scripts/mh.py init --mode ssh --auth key --host ... --key ...`
+> （或 `--auth password`），详见 `SKILL.md` 的 D 节。
+
+### 3. 使用方法
+
+```bash
+# 装完四项验证（setup 第 8 步会自动跑）
+python scripts/mh.py check           # 已连通 · ipsense <版本>
+python scripts/mh.py read pending    # 四区状态（可能为空）
+python scripts/fw.py status          # channel=native、后端三绿
+python scripts/mh.py key status      # 授权列表（指纹 / 公钥 / 时间 / 设备 / 状态）
+
+# agent 读标注 → 按标注直接执行（无需二次确认）→ 回写总结
+python scripts/mh.py read pending
+python scripts/mh.py show 39.144.159.100
+python scripts/fw.py ban 39.144.159.100            # 不带 --ttl = 永久封禁、重启保持
+python scripts/mh.py mark-done --receipt <R> --summary "已按标注永久封禁，回滚：fw unban 39.144.159.100"
+
+# 用户点「待撤回」后复原
+python scripts/mh.py read revert
+python scripts/fw.py unban 39.144.159.100
+python scripts/mh.py restore --receipt <R> --summary "已复原"
+
+# 随时收回给 agent 的 SSH 授权（也可在提交单「密钥授权区」点撤销）
+python scripts/mh.py key revoke --grant-id mh1-xxxxxxxxxxxx
+```
+
+`fw` 只写飞牛原生防火墙 `/usr/trim/etc/fw.conf` 的入站拒绝规则（`memo:ips:<ip>`），
+由 `security_service` 加载进 eBPF，重启 NAS 后依旧保持，不再下发 iptables 规则。
+常用命令全表见 `SKILL.md` 第 5 节与 [agent 接入说明](docs/agent-bridge.md)。
+
+### 4. 排障
+
+| 现象 | 处理 |
+|---|---|
+| `mh setup` / `fw status` 报「需要 paramiko」 | `pip install paramiko` |
+| `mh setup` 报「取 $HOME 失败」/「写 authorized_keys 失败」 | 确认 bootstrap 能登录、sudo 密码可用；先跑 `--dry-run` 看计划 |
+| `mh check` 报「连接超时」 | 核对 `~/.ipsense/bridge.json` 的 `host / user / key` 与 `app.sock` |
+| `mh check` 报「Permission denied」 | 查 `mh key status` 是否已被撤销；重新跑 `mh setup --force` |
+| 想重建 / 换设备授权 | `mh setup --force`，旧授权在「密钥授权区」撤销 |
+
+> 红线不变：**主包只观测、不封禁、不改防火墙、不自动处置**。`mh` 只读写提交单，
+> `fw` 是 agent 在应用之外的处置通道，`mh setup` 只建 SSH 授权，三者都不在主包内执行。
 
 ## 文档
 
@@ -36,6 +132,7 @@
 - [使用说明](docs/使用说明.md)
 - [更新日志](docs/CHANGELOG.md)
 - [排障指南：日志位置、诊断 6 件套、运行日志 / 运行报错一键导出](docs/排障指南.md)
+- [让 agent 连上 ipsense：标注、提交单、skill CLI 与 SSH 配置](docs/agent-bridge.md)
 
 ## 故障速查表
 
@@ -57,6 +154,14 @@
 | 投喂二维码太小、点开后关于页要滚动 | `1.1.18` 把二维码内联展开在关于卡片底部，撑出滚动条且只有 `210px` | 升级 `1.1.19`：二维码独立放大弹层弹出，约 `460px`，关于页不再滚动 |
 | IP 来源记录被同一个 IP 刷屏 | `1.1.19` 及更早逐行显示完整路径，同秒并发请求除路径外全一样 | 升级 `1.1.20`：同秒同 IP 合并为一行只记录动作，路径明细点开画像查看 |
 | 找不到境内 / 全球分布地图 | `1.1.20` 及更早三张地图分三块卡片，容易以为少了一张 | 升级 `1.1.21`：合并为一张卡片，右上角切「境外连线 / 境内连线 / 全球分布」 |
+| 想把某个 IP 交给 agent 处理 | `1.1.21` 及更早只能自己看日志，没有把证据交出去的入口 | 升级 `1.1.22`：画像里写标注 → 提交单 →「复制读取提示词」发给 agent |
+| 想更舒服地写标注 / 弹层开关更柔和 | `1.1.23` 及更早标注框在画像里原地放大、弹层用回弹动画 | 升级 `1.1.24`：标注框回归单行，点它弹出独立写标注窗口（带常用要求预设），四个弹层改为淡入淡出 |
+| 标注行有个点了没反应的「保存并加入提交单」按钮 | `1.1.25` 及更早留着与写标注窗口重复的行内按钮，1.1.24 改成只读触发器后已失效 | 升级 `1.1.26`：画像里只留输入框，保存统一在弹窗里完成 |
+| AI 复制提示词后连不上 NAS / 提示 Permission denied | `mh` 旧版只认密钥，账号密码环境跑不通 | 升级 `1.1.27`：`mh` 支持 `auth: password`，或用「密钥授权区」查看/撤销授权 |
+| 想收回给 AI 的 SSH 授权、删掉设备上的私钥 | 授权散落在 `authorized_keys` 里不好找 | 升级 `1.1.27`：提交单 →「密钥授权区」→ 撤销授权，只删本应用那行与密钥副本 |
+| 不同缩放下「提交单」里密钥授权挤住列表、内容显示不全 | `1.1.27` 把密钥授权做成 Tab 下方的内嵌区块，展开后抢占弹层高度 | 升级 `1.1.28`：入口移到右上角，点开才显示浮层，不占文档流 |
+| 新用户装完 skill 不知怎么配 SSH / 生成密钥 | 旧版只有手工 6 步引导，没有对应 CLI 命令 | 升级 `1.1.29`：`mh setup` 一步步引导，自动生成密钥对、建可撤销授权、写好配置并验证 |
+| 提交单只有一长串列表、读取提示词太长 | `1.1.24` 及更早是单列表，提示词含边界 / 白名单 / TTL 等大段重复内容 | 升级 `1.1.25`：四区看板 + 一句话提示词 + 单独读取路径，规矩整合进 skill，AI 通过 `mh` 读写 |
 | 设置 / 文件夹选择器点不动 | 地图 SDK 注入的 `z=1000` 交互层越过了容器层叠上下文（`1.1.12` 已修） | 升级到 `1.1.12+`；容器已加 `isolation:isolate` 锁死 SDK 层级 |
 | 数据不更新 / 状态标「部分数据异常」 | 单个接口抖动、日志路径不存在、权限不足 | 设置在「数据源」核对路径与开关，点「刷新」；连续两轮全失败才标红，避免一次抖动误报 |
 | 敲门网关 / 路由器日志没数据 | 数据源默认关闭，或 syslog 未指向本机 UDP `5514` | 设置里开启数据源并在对端配置；本应用只读，**不改对端配置 / 防火墙** |
