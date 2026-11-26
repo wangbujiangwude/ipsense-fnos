@@ -206,7 +206,7 @@ def build_summary(app, rng="24h", top_ips=20, top_events=30):
             ["最早记录", _ts(allst.get("oldest"))],
             ["数据源", "、".join(SRC_NAME.get(k, k) for k in src.keys()) or "（暂无）"],
             ["归属库", "内置 ip2region 离线库" + (
-                " + 在线多源交叉校验" if cfg.get("geo_verify_enabled", True) else "")],
+                " + ip.sb 参考校验" if cfg.get("geo_verify_enabled", True) else "")],
         ]
         L.extend(_table(["项", "值"], rows))
     section("0. 生成信息", s0)
@@ -420,14 +420,17 @@ def build_summary(app, rng="24h", top_ips=20, top_events=30):
         cfg = app.settings.all()
         A("- **出口 IP 归属不等于设备物理位置**；本机位置由用户在设置页按需定位，"
           "未定位时不写死城市。")
-        A("- IP 归属以内置 ip2region 离线库为基础，可选启用 ip-api.com / ip.sb / "
-          "ipinfo.io 三家在线源做多源交叉裁决（当前%s），结果本地缓存、可关闭；"
+        A("- IP 归属以内置 ip2region 离线库为主裁决，`ip.sb` 仅作参考补坐标与"
+          "空缺字段（当前%s），不改写国家 / 省 / 市；结果本地缓存、可关闭；"
           "离线库对运营商网段重分配存在滞后。" % (
               "已启用" if cfg.get("geo_verify_enabled", True) else "已关闭"))
         A("- 内网 / 局域网设备单独归类，不污染公网排名，但完整保留在记录表里。")
         A("- 访问协议与判定是两个独立维度；协议无法确认时明确标「未识别」，不伪造。")
         A("- 端口敲门为预留观测能力，默认未安装；应用不修改防火墙、不封禁 IP、"
           "不做自动阻断。")
+        A("- 2.0.0 起预警通知仅外发消息（10 渠道 / 两类异常规则），不写提交单、"
+          "不调处置通道、不改防火墙；卫星底图只切官方合规底图类型，边界与审图号"
+          "由官方底图承载；Lucky 日志来源默认全关、仅占位，不接实时读取。")
         A("- 1.1.14 敲门网关通道只读第三方网关落盘的结构化 JSON，按字段白名单提取；"
           "字段缺失留空、协议无法确认标「未识别」，不猜测、不补齐。")
         A("- 认证被拒 / WAF 拦截 / 授信通过都只是网关记录的事实，不是威胁情报结论；"

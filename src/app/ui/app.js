@@ -224,7 +224,8 @@
     local_auth: '本机 SSH', local_web: '本机 Web', local_kern: '内核日志',
     router_syslog: '路由器 syslog', router_file: '路由器文件', knock: '端口敲门',
     knock_app: '敲门网关',
-    fnos_audit: 'fnOS 审计'
+    fnos_audit: 'fnOS 审计',
+    lucky_web: 'Lucky 反代', lucky_sys: 'Lucky 系统'
   };
   var VERDICT_NAME = { normal: '正常访问', scan: '扫描探测', attack: '认证攻击', knock: '端口敲门' };
   var SCOPE_NAME = { cn: '境内', overseas: '境外', private: '内网', lan: '局域网设备', unknown: '未知' };
@@ -285,11 +286,23 @@
     orders: null, currentEvidence: {}, noteIp: '',
     // 1.1.25：提交单四区看板当前 tab 与「已完成」总结展开态
     ordersTab: 'pending', ordersOpen: {},
+    // 2.0.0 B2：主界面平级 tab / 布局模式 / 设置卡片内部分组 tab
+    mainView: 'overview', layout: 'tabs', settingsTab: 'data',
     geoMap: null, geoMarks: null, geoMarkIndex: {}, geoHits: [],
     // 1.1.3：五卡放大面板状态（来源矩形用于关闭时无缝收回）
     zoomOn: false, zoomDim: '', zoomName: '', zoomFrom: null,
     // 1.1.9：软件汇总日志状态（/api/summary/status 与 /api/config 下发）
-    summary: null
+    summary: null,
+    // 2.0.0 B3：预警通知 state（独立 /api/notify/state，不进主配置）
+    notify: null,
+    // 2.0.0 B4：地图动效覆盖层（透明 canvas，不刷新底图、不碰数据）
+    fx: { on: true, scan: true, revealOn: true, reveal: [], revealAt: 0,
+          cursor: 0, loading: true },
+    // 2.0.0 返工：默认卫星影像（官方 features:['base'] 不带国界标注），
+    // 仅作为有 KEY 路径的视觉选项；无 KEY 降级为纯抽象卫星质感背景。
+    mapBase: 'satellite',
+    // 2.0.0 返工：设置抽屉「未保存修改」标记（只做视觉提示，不弹阻塞确认）
+    settingsDirty: false
   };
   // 细线：频率靠色相（冷→热）而不是粗度区分，避免压盖浅色合规底图上的地名。
   // 1.0.11 起整条弧线统一单色：颜色只表达连接频率，不再沿线做明度渐隐，
@@ -776,6 +789,15 @@
       requestMapDraw(true);
     }
     if (save !== false) writeUiPref({ mapMode: mode });
+    // 2.0.0 B4：切视图立即重画 FX，清掉旧层残留的一帧与上一视图的投放点
+    try {
+      S.fx.reveal = []; S.fx.revealAt = 0; S.fx.cursor = 0;
+      Object.keys(FX.IDS).forEach(function (k) {
+        var c = fxCanvas(k); if (!c) return;
+        try { c.getContext('2d').clearRect(0, 0, c.width, c.height); } catch (e) {}
+      });
+      drawFx();
+    } catch (e) {}
   }
   function bindMapMode() {
     var seg = $('mapModeSeg');
@@ -1291,6 +1313,21 @@
       ready: function () { return !!(window.TMap && typeof window.TMap.Map === 'function'); },
       load: function (p, k, done, fail) { loadMapSdk(p, k, done, fail); },
       // 腾讯 SDK 原生就是 TMap.* 形状，直接复用，无需包装
+      // 2.0.0 B4：GL JS 官方投影 projectToContainer(LatLng) -> Point
+      project: function (m, lat, lng) {
+        var p = m.projectToContainer(new window.TMap.LatLng(lat, lng));
+        return { x: p.getX ? p.getX() : p.x, y: p.getY ? p.getY() : p.y };
+      },
+      // 2.0.0 B5：卫星底图（腾讯 GL JS 官方 SDK，合规链路内）
+      // 只调用官方 setBaseMap，不拉裸瓦片、不改底图、不自绘边界；
+      // 版权 / 审图号由官方底图承载，应用不隐藏、不裁剪。
+      setBaseMap: function (m, mode) {
+        if (!m || typeof m.setBaseMap !== 'function') return false;
+        m.setBaseMap(mode === 'satellite'
+          ? { type: 'satellite', features: ['base'] }
+          : { type: 'vector' });
+        return true;
+      },
       build: function () { return window.TMap; }
     },
     amap: {
@@ -1319,6 +1356,11 @@
         var w = st.width || 14, h = st.height || 14;
         return new N.Marker({ position: [c.lng, c.lat], anchor: 'center', cursor: 'pointer',
           icon: new N.Icon({ image: st.src, size: new N.Size(w, h), imageSize: new N.Size(w, h) }) });
+      },
+      // 2.0.0 B4：lngLatToContainer([lng,lat]) -> Pixel
+      project: function (m, lat, lng) {
+        var p = m.lngLatToContainer([lng, lat]);
+        return { x: p.getX ? p.getX() : p.x, y: p.getY ? p.getY() : p.y };
       },
       build: function () { return buildAdapter(MAP_ENGINES.amap); }
     },
@@ -1356,6 +1398,12 @@
         return new N.Marker(new N.Point(c.lng, c.lat),
           { icon: new N.Icon(st.src, new N.Size(w, h), { anchor: new N.Size(w / 2, h / 2) }) });
       },
+      // 2.0.0 B4：GCJ-02 -> BD-09 后 pointToPixel(Point) -> Pixel
+      project: function (m, lat, lng) {
+        var c = gcjToBd(lat, lng);
+        var p = m.pointToPixel(new window.BMapGL.Point(c.lng, c.lat));
+        return { x: p.x, y: p.y };
+      },
       build: function () { return buildAdapter(MAP_ENGINES.bmapgl); }
     },
     tianditu: {
@@ -1389,6 +1437,12 @@
         return new N.Marker(new N.LngLat(c.lng, c.lat),
           { icon: new N.Icon({ iconUrl: st.src, iconSize: new N.Point(w, h),
             iconAnchor: new N.Point(w / 2, h / 2) }) });
+      },
+      // 2.0.0 B4：GCJ-02 -> CGCS2000 后 lngLatToContainer(LngLat) -> Point
+      project: function (m, lat, lng) {
+        var c = gcjToWgs(lat, lng);
+        var p = m.lngLatToContainer(new window.T.LngLat(c.lng, c.lat));
+        return { x: p.x, y: p.y };
       },
       build: function () { return buildAdapter(MAP_ENGINES.tianditu); }
     }
@@ -1777,6 +1831,8 @@
       ['SDK 已加载', _ed.ready() ? '是' : '否'],
       ['SDK.Map 可用', (SDK && typeof SDK.Map === 'function') ? '是' : '否'],
       ['底图状态', S.tmapState + (S.tmapError ? ' · ' + S.tmapError : '')],
+      ['底图样式', mapBaseLabel() + (S.mapBase === 'satellite' ?
+        '（腾讯 GL JS 官方卫星底图 · 边界以官方底图为准）' : '（默认）')],
       ['全球容器尺寸', Math.round(w.width) + ' × ' + Math.round(w.height)],
       ['中国容器尺寸', Math.round(c.width) + ' × ' + Math.round(c.height)],
       ['底图资源请求', tileText],
@@ -1825,6 +1881,26 @@
       catch (e) { failMap('底图初始化失败：' + ((e && e.message) || '未知错误')); }
     }, function (msg) { failMap(msg); });
   }
+
+  // ===== 2.0.0 B5 · 卫星底图（合规链路内，纯渲染层） =====
+  // 只经腾讯地图 GL JS 官方 setBaseMap API 切换底图样式；不拉裸瓦片、
+  // 不篡改底图、不自绘或改绘任何国界 / 海岸线 / 行政区划边界；
+  // 边界一律以官方合规底图为准，版权与审图号由官方底图承载并保留。
+  // 无 KEY 的 Canvas 降级路径继续只画散点、不绘任何边界，不受影响。
+  function mapBaseLabel() { return S.mapBase === 'satellite' ? '卫星影像' : '矢量底图'; }
+  function applyMapBase() {
+    if (!S.tmapReady) return;
+    var eng = mapEngineOf(providerById(S.mapProvider));
+    // 当前仅腾讯 GL JS 提供官方卫星底图；其它引擎保持合规矢量底图
+    if (typeof eng.setBaseMap !== 'function') return;
+    [S.world, S.cn, S.geoMap].forEach(function (m) {
+      if (!m) return;
+      try { eng.setBaseMap(nativeOf(m), S.mapBase); }
+      catch (e) { console.warn('satellite basemap fallback', e); }
+    });
+  }
+  // ===== B5 卫星底图结束 =====
+
   function rebuildMap() {
     // 1.1.8：彻底销毁旧引擎实例与覆盖层，回退 Canvas，再按当前服务商重建
     [S.world, S.cn].forEach(function (m) {
@@ -1928,11 +2004,17 @@
     S.cn.marks = new SDK.MultiMarker({ map: S.cn, styles: markStyles(), geometries: [] });
     S.tmapReady = true;
     setMapState('ready');
-    $('worldNote').textContent = '底图 © ' + mapProviderName() + ' · 国界与行政区划以官方底图为准';
-    $('cnNote').textContent = '底图 © ' + mapProviderName() + ' · 中国香港 / 澳门 / 台湾均属中国境内';
+    $('worldNote').textContent = '底图 © ' + mapProviderName() + ' · ' + mapBaseLabel() +
+      ' · 国界与行政区划以官方底图为准';
+    $('cnNote').textContent = '底图 © ' + mapProviderName() + ' · ' + mapBaseLabel() +
+      ' · 中国香港 / 澳门 / 台湾均属中国境内';
     bindMarkerEvents(S.world, 'world');
     bindMarkerEvents(S.cn, 'cn');
     requestMapDraw(true);
+    applyMapBase();
+    // 2.0.0 返工：有 KEY 成功路径同样保证 FX 定时器常驻，
+    // 不再让「底图加载完成」把逐帧绘制停掉（startCanvasAnim 幂等）。
+    startCanvasAnim();
   }
   // 增量同步：只把新增 / 变化 / 删除的 geometry 交给 SDK。
   // SDK 不支持 add/update/remove 时自动回退 setGeometries，功能不受影响。
@@ -2173,7 +2255,7 @@
         return ipItem(m, m.ip === curIp);
       }).join('') + '</div>';
   }
-  // 归属核验：展示多源交叉的每个数据源原始判定、裁决结果与置信度（1.0.8）
+  // 归属核验：展示离线库主裁决、参考源原始判定、裁决结果与置信度（1.0.8 / 1.1.30 改口径）
   // 1.1.16：Nginx combined 日志不记录目标端口。1.1.15 之前把应用自身监听
   // 端口（web_port，默认 5666）填进 port，导致本机 Web 每条都显示 5666 ——
   // 那是软件自己的端口，不是被访问的端口。现在日志没写就显示「未记录」，
@@ -2193,11 +2275,11 @@
   }
 
   function verifyBlock(ip, v) {
-    var h = '<h3 style="font-size:13px;margin:18px 0 8px">归属核验 · 多源交叉</h3>';
+    var h = '<h3 style="font-size:13px;margin:18px 0 8px">归属核验 · 离线主裁决</h3>';
     if (!v) {
       return h + '<div class="verify-box">' +
         '<p class="hint" style="margin:0 0 10px">该 IP 尚未在线核验，当前展示的是随包离线库判定。' +
-        '在线核验会同时查询 ip-api.com / ip.sb / ipinfo.io，并与本地库共 4 票多数派裁决。</p>' +
+        '在线核验以离线库为主裁决，`ip.sb` 仅作参考补坐标与空缺字段，不再改动省 / 市归属。</p>' +
         '<button class="profile-btn" data-act="verify">立即在线核验</button></div>' +
         districtBlock(null);
     }
@@ -2207,9 +2289,9 @@
     var lloc = [l.country, l.province, l.city, l.district].filter(Boolean).join(' · ');
     h += '<div class="verify-box">' +
       '<div class="verify-top"><span class="vf-tag ' + (v.disagree ? 'warn' : 'ok') + '">' +
-      (v.disagree ? '存在源间分歧' : '多源一致') + '</span>' +
+      (v.disagree ? '参考源有分歧' : '主裁决一致') + '</span>' +
       '<span class="vf-conf">置信度 ' + esc(CONF_NAME[v.confidence] || v.confidence || '—') +
-      ' · ' + num(v.online_sources || 0) + ' 家在线源</span></div>';
+      ' · ' + num(v.online_sources || 0) + ' 家参考源</span></div>';
     h += kvRow('裁决结果', loc || '未知') +
       kvRow('区级信息', v.district || '在线源未返回，可手工补充') +
       kvRow('本地离线库', lloc || '—') +
@@ -2224,7 +2306,7 @@
     }
     if (v.disagree) {
       h += '<p class="hint" style="color:var(--amber);margin:10px 0 0">' +
-        '各数据源判定不一致，已按多数派裁决。出口 IP 的归属不等于设备物理位置。</p>';
+        '参考源与离线库判定不一致，归属仍以离线库为准。出口 IP 的归属不等于设备物理位置。</p>';
     }
     h += '<button class="profile-btn" data-act="verify">重新核验（忽略缓存）</button></div>';
     h += districtBlock(v);
@@ -2464,10 +2546,10 @@
       h += '<h3 style="font-size:13px;margin:18px 0 8px">路径明细 · 高频路径</h3>' +
         '<p class="hint" style="margin:0 0 8px">表格已把同秒同 IP 的请求合并，这里查看该来源点的路径明细。</p>' +
         pathBlock(g.top_paths);
-      h += '<h3 style="font-size:13px;margin:18px 0 8px">归属核验 · 多源交叉</h3>' +
+      h += '<h3 style="font-size:13px;margin:18px 0 8px">归属核验 · 离线主裁决</h3>' +
         '<div class="verify-box"><p class="hint" style="margin:0">本圆点合并了 ' +
-        ms.length + ' 个 IP。点上方任意 IP 可查看该 IP 的多源核验结果：' +
-        '每个数据源的原始判定、置信度与最终裁决。</p></div>';
+        ms.length + ' 个 IP。点上方任意 IP 可查看该 IP 的归属核验结果：' +
+        '离线库主裁决、参考源原始判定与置信度。</p></div>';
       h += '<h3 style="font-size:13px;margin:18px 0 8px">最近 20 条动作（精确到秒）</h3>' +
         ((g.recent || []).slice(0, 20).map(function (x) {
           return '<div class="src-line"><span>' + tm(x.ts) + ' · ' + protoChip(x.proto) +
@@ -2535,33 +2617,44 @@
     return x;
   }
   function canvasBg(which, w, h, dpr, b) {
-    // 渐变 / 经纬网 / 说明文字是静态的，离屏画一次，之后每帧只 drawImage
-    // 1.1.15：本机经度变化时窗口也变，背景经纬网必须跟着重建
-    var key = w + 'x' + h + '@' + dpr + '#L' + Math.round(b.lngMin);
+    // 2.0.0 返工：无 KEY 降级底图改成「卫星影像质感」的纯抽象背景。
+    // 合规红线：这里只有深色渐变 + 程序化颗粒，绝不自绘陆地 / 海岸线 /
+    // 国界 / 省界 / 经纬网，也绝不拉取任何外部影像瓦片或境外影像源。
+    // 旧版虚线经纬网看起来像「轮廓图」，用户明确要求去掉，故整段删除。
+    var key = w + 'x' + h + '@' + dpr + '#S' + which;
     var cached = S.bg[which];
     if (cached && cached.key === key) return cached.img;
     var off = document.createElement('canvas');
     off.width = Math.round(w * dpr); off.height = Math.round(h * dpr);
     var c = off.getContext('2d');
     c.setTransform(dpr, 0, 0, dpr, 0, 0);
-    var bg = c.createLinearGradient(0, 0, 0, h);
-    bg.addColorStop(0, '#0d2440'); bg.addColorStop(1, '#071326');
+    // 深空底：径向冷光 + 纵向渐暗，模拟夜间遥感影像的整体色调
+    var bg = c.createRadialGradient(w * 0.52, h * 0.44, 0,
+                                   w * 0.52, h * 0.44, Math.max(w, h) * 0.78);
+    bg.addColorStop(0, '#123252'); bg.addColorStop(0.55, '#0a1e38');
+    bg.addColorStop(1, '#050e1e');
     c.fillStyle = bg; c.fillRect(0, 0, w, h);
-    c.strokeStyle = 'rgba(80,140,200,.13)'; c.lineWidth = 1;
-    c.setLineDash([3, 5]); c.beginPath();
-    var step = which === 'world' ? 30 : 10, lng, lat, x, y;
-    for (lng = Math.ceil(b.lngMin / step) * step; lng <= b.lngMax; lng += step) {
-      x = proj(0, lng, b, w, h)[0]; c.moveTo(x, 0); c.lineTo(x, h);
+    // 两道极淡的斜向光带，制造影像层次感（不含任何地理轮廓）
+    var band = c.createLinearGradient(0, 0, w, h);
+    band.addColorStop(0, 'rgba(90,160,220,0)');
+    band.addColorStop(0.42, 'rgba(90,160,220,.055)');
+    band.addColorStop(0.58, 'rgba(60,120,190,.035)');
+    band.addColorStop(1, 'rgba(90,160,220,0)');
+    c.fillStyle = band; c.fillRect(0, 0, w, h);
+    // 程序化细颗粒：固定种子，保证每帧复用同一张离屏图、不闪烁
+    var seed = 20200200 + (which === 'cn' ? 7 : 0);
+    function rnd() { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }
+    var n = Math.min(1400, Math.round(w * h / 260));
+    for (var i = 0; i < n; i++) {
+      var x = rnd() * w, y = rnd() * h, r = rnd() * 1.1 + 0.25;
+      c.globalAlpha = 0.05 + rnd() * 0.16;
+      c.fillStyle = rnd() > 0.22 ? '#9dc6ee' : '#4d86bd';
+      c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
     }
-    for (lat = Math.ceil(b.latMin / step) * step; lat <= b.latMax; lat += step) {
-      y = proj(lat, 0, b, w, h)[1]; c.moveTo(0, y); c.lineTo(w, y);
-    }
-    c.stroke(); c.setLineDash([]);
-    c.fillStyle = 'rgba(140,170,210,.35)'; c.font = '10px sans-serif';
-    c.fillText(which === 'world'
-      ? '经度 ' + Math.round(b.lngMin) + '° … ' + Math.round(b.lngMax) + '°（以本机为中心）'
-      : '中国境内坐标范围', 10, 16);
-    c.fillText('纬度 ' + b.latMax + '° … ' + b.latMin + '°', 10, 30);
+    c.globalAlpha = 1;
+    // 说明文字：明确这只是抽象示意背景，不是真实地图影像
+    c.fillStyle = 'rgba(150,180,215,.42)'; c.font = '10px sans-serif';
+    c.fillText('卫星风格坐标散点示意 · 非地图影像 · 未绘制任何边界', 10, 16);
     S.bg[which] = { key: key, img: off };
     return off;
   }
@@ -2668,7 +2761,7 @@
     if (!S.tmapReady) {
       $(isWorld ? 'worldNote' : 'cnNote').textContent = S.tmapState === 'error'
         ? '底图未显示：' + S.tmapError
-        : '坐标散点示意 · 非地图底图（未绘制国界）；配置密钥后切换为合规底图';
+        : '卫星风格坐标散点示意 · 非地图影像（未绘制任何边界）；配置密钥后切换为官方合规卫星底图';
     }
   }
   function canvasHit(which, ev) {
@@ -2693,14 +2786,210 @@
       });
     });
   }
+  // ================= 2.0.0 B4 · 地图动效覆盖层 =================
+  // 背景：无 KEY 的 Canvas 降级路径一直有「沿弧线流动的白色光点」，
+  // 但配了 KEY 接了合规底图后，弧线是静态折线图层，光点就消失了。
+  // 这里在三个地图容器上各叠一张透明 canvas，统一负责：
+  //   ① 有 KEY 路径补回流动光点（两条路径视觉一致）；
+  //   ② 以出口 IP / 本机为中心的一波波雷达波纹（伪 3D 神识扫描）；
+  //   ③ 每 5 秒渐显一批新坐标点，只在覆盖层绘制、绝不刷新底图几何。
+  // 合规：覆盖层只画应用自有数据（IP 散点 / 连线 / 本机装饰环），
+  // 不绘制任何国界、海岸线或行政区划边界，边界一律以官方底图为准。
+  var FX = {
+    IDS: { world: 'worldFx', cn: 'cnFx', geo: 'geoFx' },
+    REVEAL_MS: 5000,   // 每 5 秒投放一批新坐标点
+    REVEAL_N: 5,       // 每批最多 5 个
+    LIFE_MS: 4200,     // 单个点存活时长
+    MAX_DOTS: 240,     // 光点数量上限，控制每帧成本
+    RINGS: 3           // 同时存在的雷达波纹数
+  };
+  function fxCanvas(which) { return $(FX.IDS[which]); }
+  function fxSetup(which) {
+    var c = fxCanvas(which); if (!c) return null;
+    var dpr = window.devicePixelRatio || 1;
+    var w = c.clientWidth || 600, h = c.clientHeight || 340;
+    var pw = Math.round(w * dpr), ph = Math.round(h * dpr);
+    // 只有尺寸真的变了才重置画布（重置会清空并触发一次全量重绘）
+    if (c.width !== pw || c.height !== ph) { c.width = pw; c.height = ph; }
+    var ctx = c.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { c: c, ctx: ctx, w: w, h: h, dpr: dpr };
+  }
+  // GCJ-02 经纬度 → 当前激活图层的容器像素。
+  // 有 KEY 时优先用各引擎原生投影（随 SDK 缩放 / 平移一起移动）；
+  // 任一环节不支持或抛错，回退到与 Canvas 降级路径一致的等距投影。
+  function fxProject(which, lat, lng, s, home) {
+    var b = which === 'cn' ? CN_BOUNDS : worldCenteredBounds(home);
+    var fallback = proj(lat, unwrapTo(lng, home.lng), b, s.w, s.h);
+    if (!S.tmapReady) return fallback;
+    try {
+      var m = which === 'geo' ? S.geoMap : (which === 'cn' ? S.cn : S.world);
+      var eng = mapEngineOf(providerById(S.mapProvider));
+      var p = eng.project ? eng.project(nativeOf(m), lat, lng) : null;
+      if (p && isFinite(p.x) && isFinite(p.y)) return [p.x, p.y];
+    } catch (e) {}
+    return fallback;
+  }
+  // 2.0.0 返工：每帧清掉非激活图层的 fx canvas 旧帧。
+  // 原实现只清当前激活层，切换 mapMode 或底图加载后，其它层的
+  // 最后一帧会残留在 z-index 1103 的覆盖层上，视觉上「卡在上方图层」。
+  function fxClearInactive(which) {
+    Object.keys(FX.IDS).forEach(function (k) {
+      if (k === which) return;
+      var c = fxCanvas(k); if (!c) return;
+      try { c.getContext('2d').clearRect(0, 0, c.width, c.height); } catch (e) {}
+    });
+  }
+  function fxActive() { return MAP_MODE_LAYERS[S.mapMode] ? S.mapMode : 'world'; }
+  function fxData(which) {
+    if (which === 'geo') return (S.geoData && S.geoData.regions) || [];
+    return ((which === 'cn' ? S.arcData.cn : S.arcData.world) || emptyArcs()).list;
+  }
+  // 每 5 秒从当前视图数据里挑一批「新坐标点」，按年龄渐显 → 停留 → 渐隐。
+  function fxPickReveal(which, now) {
+    if (!S.fx.revealOn) { S.fx.reveal = []; return; }
+    if (now - (S.fx.revealAt || 0) < FX.REVEAL_MS) return;
+    S.fx.revealAt = now;
+    var list = fxData(which), picks = [];
+    for (var i = 0; i < list.length && picks.length < FX.REVEAL_N; i++) {
+      var r = list[(S.fx.cursor + i) % list.length];
+      if (r && r.lat != null && r.lng != null) picks.push({ lat: r.lat, lng: r.lng, born: now });
+    }
+    S.fx.cursor = (S.fx.cursor + FX.REVEAL_N) % Math.max(1, list.length);
+    S.fx.reveal = (S.fx.reveal || []).filter(function (p) { return now - p.born < FX.LIFE_MS; })
+      .concat(picks).slice(-FX.MAX_DOTS);
+  }
+  // 2.0.0 二次返工：流动光点必须严格落在 SDK 折线上。
+  // 旧实现用 bezierAt(g, t) 重新按「本机中心窗口」算经纬度，而 SDK 折线
+  // 用的是 worldSegs(full) 归一化到 [-180,180] 的采样点：跨日期变更线的
+  // 长弧两者经度窗口差 360°（实测美国西岸→中国 bezierAt 低到 -245.9°，
+  // 21 个采样点里 11 个超出合法窗口），再交给 SDK 投影就会甩到线外 ——
+  // 用户反馈「光球移动有了，但是位置不对，不在线上」。
+  // 这里直接复用 SDK 折线提交给 geometry 的同一批采样点，按 t 线性插值，
+  // 经纬度与 SDK 折线顶点完全一致，光点必然落在弧线上。
+  function fxArcPoint(g, t) {
+    var segs = (g && g.sdkSegs && g.sdkSegs.length) ? g.sdkSegs
+             : (g && g.segs && g.segs.length) ? g.segs : null;
+    if (!segs) return null;
+    var pts = [], i, j, s;
+    for (i = 0; i < segs.length; i++) {
+      s = segs[i];
+      for (j = 0; j < s.length; j++) pts.push(s[j]);
+    }
+    if (!pts.length) return null;
+    if (pts.length === 1) return { lat: pts[0].lat, lng: pts[0].lng };
+    var f = Math.max(0, Math.min(1, t)) * (pts.length - 1);
+    var lo = Math.floor(f), hi = Math.min(pts.length - 1, lo + 1), u = f - lo;
+    // seam 两侧经度差 360° 的相邻点不插值，直接取端点，避免光点横穿整幅地图
+    if (Math.abs(pts[hi].lng - pts[lo].lng) > 180) u = 0;
+    return { lat: pts[lo].lat + (pts[hi].lat - pts[lo].lat) * u,
+             lng: pts[lo].lng + (pts[hi].lng - pts[lo].lng) * u };
+  }
+  // 2.0.0 二次返工：SDK 路径光点只走引擎原生投影。
+  // fxProject() 的等距 fallback 与 SDK 底图的墨卡托投影不是同一坐标系，
+  // 一旦原生投影不可用，用它画出来的光点必然错位；此时宁可不画，也不
+  // 在地图上线外乱跑。投影来源写到 body dataset，供诊断 / 验收排查。
+  function fxSdkPoint(which, lat, lng, s, home) {
+    if (!S.tmapReady) return null;
+    try {
+      var m = which === 'geo' ? S.geoMap : (which === 'cn' ? S.cn : S.world);
+      var eng = mapEngineOf(providerById(S.mapProvider));
+      var p = eng.project ? eng.project(nativeOf(m), lat, lng) : null;
+      if (p && isFinite(p.x) && isFinite(p.y)) {
+        if (S.fxProjMode !== 'native') {
+          S.fxProjMode = 'native';
+          try { document.body.dataset.fxProjMode = 'native'; } catch (e) {}
+        }
+        return [p.x, p.y];
+      }
+    } catch (e) {}
+    if (S.fxProjMode !== 'off') {
+      S.fxProjMode = 'off';
+      try { document.body.dataset.fxProjMode = 'off'; } catch (e) {}
+    }
+    return null;
+  }
+  function drawFx() {
+    if (!S.fx || S.fx.on === false) return;
+    var which = fxActive(), s = fxSetup(which);
+    if (!s) return;
+    var ctx = s.ctx, now = Date.now();
+    var home = { lat: Number(S.home.lat) || 22.54, lng: Number(S.home.lng) || 114.06 };
+    fxClearInactive(which);
+    ctx.clearRect(0, 0, s.w, s.h);
+    // ① 雷达波纹：以出口 IP / 本机为中心，一圈圈向外扩散（椭圆压扁做伪 3D）。
+    //    2.0.0 二次返工：按用户要求「雷达效果直接去除，回滚到之前的效果」，
+    //    整块还原为 B6 之前（GA）的三层椭圆波纹，移除返工时新增的全部
+    //    附加装饰（辉光 / 扇形 / 亮弧 / 刻度 / 准星）。仍只画应用自有装饰，
+    //    不绘制任何国界、海岸线或行政区划边界，边界一律以官方底图为准。
+    if (S.fx.scan !== false) {
+      var hp = fxProject(which, home.lat, home.lng, s, home);
+      var span = Math.min(s.w, s.h) * 0.55;
+      for (var k = 0; k < FX.RINGS; k++) {
+        var ph = ((now / 2600) + k / FX.RINGS) % 1;
+        var r = 8 + span * ph, a = (1 - ph) * 0.42;
+        if (a <= 0.01) continue;
+        ctx.globalAlpha = a; ctx.strokeStyle = '#5db8ff'; ctx.lineWidth = 1.4;
+        ctx.beginPath(); ctx.ellipse(hp[0], hp[1], r, r * 0.62, 0, 0, Math.PI * 2); ctx.stroke();
+        ctx.globalAlpha = a * 0.5;
+        ctx.beginPath(); ctx.ellipse(hp[0], hp[1], r * 0.72, r * 0.45, 0, 0, Math.PI * 2); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+    // ② 流动光点：只补「有 KEY」的 SDK 路径（无 KEY 时 Canvas 已画，避免双份）。
+    //    2.0.0 二次返工：光点取 SDK 折线的同一批采样点（fxArcPoint）并走
+    //    引擎原生投影（fxSdkPoint），严格贴合弧线、不会甩到线外。
+    //    所有点合成一个 path 一次 fill，不逐点 fill、不重建任何 SDK geometry。
+    if (S.arcAnimate && S.tmapReady && which !== 'geo') {
+      var data = (which === 'cn' ? S.arcData.cn : S.arcData.world) || emptyArcs();
+      var t = (S.anim % 100) / 100, n = 0;
+      ctx.beginPath();
+      data.list.forEach(function (p) {
+        if (n++ >= FX.MAX_DOTS || !p.g) return;
+        var q = fxArcPoint(p.g, t);
+        if (!q) return;
+        var xy = fxSdkPoint(which, q.lat, q.lng, s, home);
+        if (!xy) return;
+        ctx.moveTo(xy[0] + 2.2, xy[1]);
+        ctx.arc(xy[0], xy[1], 2.2, 0, Math.PI * 2);
+      });
+      ctx.globalAlpha = 0.92; ctx.fillStyle = '#eaf6ff'; ctx.fill(); ctx.globalAlpha = 1;
+    }
+    // ③ 5 秒新坐标点：只在覆盖层渐显渐隐，不新增 / 不删除任何底图几何
+    fxPickReveal(which, now);
+    (S.fx.reveal || []).forEach(function (p) {
+      var age = (now - p.born) / FX.LIFE_MS;
+      if (age < 0 || age > 1) return;
+      var alpha = age < 0.18 ? age / 0.18 : (age > 0.72 ? (1 - age) / 0.28 : 1);
+      alpha = Math.min(1, alpha);
+      var xy = fxProject(which, p.lat, p.lng, s, home);
+      var rr = 3 + 7 * (1 - age);
+      ctx.globalAlpha = alpha * 0.28; ctx.fillStyle = '#7dd3fc';
+      ctx.beginPath(); ctx.arc(xy[0], xy[1], rr + 5, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = alpha; ctx.fillStyle = '#bae6fd';
+      ctx.beginPath(); ctx.arc(xy[0], xy[1], 2.4, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+    });
+  }
+  function hideMapLoading() {
+    var el = $('mapLoading');
+    if (el) el.classList.add('off');
+    if (S.fx) S.fx.loading = false;
+    try { document.body.dataset.mapLoading = 'off'; } catch (e) {}
+  }
+
   var canvasTimer = null;
   function startCanvasAnim() {
     if (canvasTimer) return;
     canvasTimer = setInterval(function () {
-      if (S.tmapReady || document.hidden) return;
+      if (document.hidden) return;
       S.anim += 2;
-      // 只做绘制，曲线几何已由 drawMaps 缓存，不再每次重新计算
-      drawCanvas('world'); drawCanvas('cn');
+      // 2.0.0 B4：FX 覆盖层两条路径都逐帧更新（有 KEY 时补 SDK 缺失的
+      // 流动光点，无 KEY 时叠加雷达波纹与 5 秒新点）；只有无 KEY 路径需要
+      // 额外重绘 Canvas 散点，几何已由 drawMaps 缓存，不再重新计算。
+      // 60ms 一帧（~16fps）足够表达流动，不给低配设备加负担。
+      try { drawFx(); } catch (e) {}
+      if (!S.tmapReady) { drawCanvas('world'); drawCanvas('cn'); }
     }, 60);
   }
   function stopCanvasAnim() {
@@ -2713,7 +3002,9 @@
     // 数据指纹未变时完全不碰地图：曲线多时反复重建 GPU 缓冲是卡顿主因
     if (!changed && !force) return;
     if (S.tmapReady) {
-      stopCanvasAnim();
+      // 2.0.0 返工：FX 覆盖层定时器必须常驻。原来这里 stop 掉，
+      // 配了 KEY 之后 drawFx() 不再逐帧执行：流动光点消失、
+      // 雷达最后一帧残留并浮在底图上层（用户反馈的「卡在上方图层」）。
       drawTMaps(home);
     } else {
       drawCanvas('world'); drawCanvas('cn');
@@ -3679,6 +3970,259 @@
     };
   }
 
+  // 2.0.0 B2：设置卡片内部分组 tab。所有 pane 一次性写进 DOM，
+  // 绑定逻辑（btnSaveCfg / bindMapService / renderMapDiag 等）不受切换影响。
+  function initSettingsTabs() {
+    var box = $('settingsTabs'); if (!box) return;
+    box.onclick = function (e) {
+      var b = e.target, t = null;
+      while (b && b !== box) {
+        if (b.getAttribute && b.getAttribute('data-pane')) { t = b; break; }
+        b = b.parentNode;
+      }
+      if (!t) return;
+      var v = t.getAttribute('data-pane');
+      S.settingsTab = v;
+      Array.prototype.forEach.call($('settingsBody').querySelectorAll('.settings-pane'), function (p) {
+        p.classList.toggle('on', p.getAttribute('data-pane') === v);
+      });
+      Array.prototype.forEach.call(box.querySelectorAll('.settings-tab'), function (x) {
+        x.classList.toggle('on', x === t);
+      });
+    };
+    if (S.settingsTab && S.settingsTab !== 'data') {
+      var last = box.querySelector('.settings-tab[data-pane="' + S.settingsTab + '"]');
+      if (last) last.click();
+    }
+  }
+
+  // ---------------- 2.0.0 B3 · 预警通知（严格纯外发） ----------------
+  // 配置走独立的 /api/notify/*；输入用 data-ng / data-nr / data-nf，
+  // 不带 data-k，避免被 collectConfig() 收进主配置。
+  function notifyChMeta(id) {
+    var list = (S.notify && S.notify.channels) || [];
+    for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+    return { id: id, label: id, group: '', fields: [], note: '' };
+  }
+  function notifyFieldHtml(cid, f, val) {
+    var v = (val === undefined || val === null) ? (f.default || '') : val;
+    var attr = 'data-nf="' + esc(f.key) + '" data-cid="' + esc(cid) + '"';
+    var lab = '<label class="notify-lab">' + esc(f.label) +
+      (f.secret ? '<span class="notify-secret">已保存；留着不动即可，填新值覆盖，清空则删除</span>' : '') +
+      '</label>';
+    var input;
+    if (f.type === 'select') {
+      input = '<select ' + attr + '>' + (f.options || []).map(function (o) {
+        return '<option value="' + esc(o) + '"' +
+          (String(v) === String(o) ? ' selected' : '') + '>' + esc(o) + '</option>';
+      }).join('') + '</select>';
+    } else if (f.type === 'textarea') {
+      input = '<textarea ' + attr + ' rows="2">' + esc(String(v)) + '</textarea>';
+    } else {
+      var t = f.type === 'number' ? 'number' : (f.secret ? 'password' : 'text');
+      input = '<input type="' + t + '" ' + attr + ' value="' + esc(String(v)) + '"' +
+        (f.placeholder ? ' placeholder="' + esc(f.placeholder) + '"' : '') + '>';
+    }
+    return '<div class="notify-f">' + lab + input +
+      (f.hint ? '<p class="hint">' + esc(f.hint) + '</p>' : '') + '</div>';
+  }
+  function notifyChannelHtml(ch) {
+    var m = notifyChMeta(ch.channel);
+    var cid = esc(ch.id);
+    return '<div class="notify-ch" data-cid="' + cid + '">' +
+      '<div class="notify-ch-head"><b>' + esc(m.label) + '</b>' +
+      '<span class="notify-badge">' + (ch.enabled ? '已启用' : '已停用') + '</span>' +
+      '<span style="flex:1"></span>' +
+      '<button type="button" class="btn ghost" data-act="test" data-cid="' + cid + '">测试发送</button>' +
+      '<button type="button" class="btn ghost" data-act="del" data-cid="' + cid + '">删除</button></div>' +
+      '<input type="hidden" data-nf="channel" data-cid="' + cid + '" value="' + esc(ch.channel) + '">' +
+      '<div class="notify-f"><label class="notify-lab">启用该渠道</label>' +
+      '<label class="notify-sw"><input type="checkbox" data-nf="enabled" data-cid="' + cid + '"' +
+      (ch.enabled ? ' checked' : '') + '> 发送时包含此渠道</label></div>' +
+      notifyFieldHtml(ch.id, { key: 'title_prefix', label: '标题前缀', type: 'text',
+                               default: '[ipsense]' }, ch.title_prefix) +
+      (m.fields || []).map(function (f) {
+        return notifyFieldHtml(ch.id, f, ch[f.key]);
+      }).join('') +
+      (m.note ? '<p class="hint" style="margin:8px 0 0">' + esc(m.note) + '</p>' : '') +
+      '</div>';
+  }
+  function notifyRuleHtml(rule, rc) {
+    rc = rc || {};
+    return '<div class="form-group"><h3>' + esc(rule.label) + '</h3>' +
+      '<p class="hint">' + esc(rule.desc) + '</p>' +
+      '<label class="notify-sw"><input type="checkbox" data-nr="' + esc(rule.id) + '.enabled"' +
+      (rc.enabled ? ' checked' : '') + '> 启用这条规则</label>' +
+      '<div class="notify-grid">' + (rule.fields || []).map(function (f) {
+        return '<div class="notify-f"><label class="notify-lab">' + esc(f.label) + '</label>' +
+          '<input type="number" data-nr="' + esc(rule.id) + '.' + esc(f.key) + '" value="' +
+          esc(rc[f.key] == null ? f.min : rc[f.key]) + '" min="' + f.min + '" max="' + f.max + '"></div>';
+      }).join('') + '</div></div>';
+  }
+  function renderNotifyPane() {
+    var host = $('notifyPane');
+    if (!host || !S.notify) return;
+    var r = S.notify, c = r.config || {}, st = r.stats || {};
+    var channels = c.channels || [];
+    var rulesHtml = (r.rules || []).map(function (rule) {
+      return notifyRuleHtml(rule, (c.rules || {})[rule.id]);
+    }).join('');
+    var chansHtml = channels.map(notifyChannelHtml).join('') ||
+      '<p class="hint">还没有配置渠道。从下方选一个渠道添加；不配渠道、不打开总开关，' +
+      '就不会有任何外发。</p>';
+    var addOpts = (r.channels || []).map(function (m) {
+      return '<option value="' + esc(m.id) + '">' + esc(m.label) + ' · ' + esc(m.group) + '</option>';
+    }).join('');
+    var hist = (r.history || []).slice(0, 8).map(function (x) {
+      return '<tr><td>' + esc(tm(x.at)) + '</td><td>' + esc(x.rule) + '</td>' +
+        '<td>' + esc(x.ip || '—') + '</td><td>' + esc(x.title || '') + '</td>' +
+        '<td class="' + (x.ok ? 'diag-ok' : 'diag-bad') + '">' +
+        esc(x.ok) + '/' + esc(x.total) + '</td></tr>';
+    }).join('');
+    host.innerHTML =
+      '<div class="redline-note">纯外发 · 只观测 · 不封禁 · 不改防火墙 · 不自动处置。' +
+      '预警只把观测到的异常发到你配置的渠道，不写提交单、不调用处置通道。</div>' +
+      '<div class="form-group"><h3>总开关与调度</h3>' +
+      '<label class="notify-sw"><input type="checkbox" data-ng="enabled"' +
+      (c.enabled ? ' checked' : '') + '> 启用预警通知（默认关闭）</label>' +
+      '<div class="notify-grid">' +
+      '<div class="notify-f"><label class="notify-lab">检测间隔（秒）</label>' +
+      '<input type="number" data-ng="interval" value="' + esc(c.interval || 30) + '" min="10" max="3600"></div>' +
+      '<div class="notify-f"><label class="notify-lab">同 IP 冷却（秒）</label>' +
+      '<input type="number" data-ng="cooldown" value="' + esc(c.cooldown || 300) + '" min="30" max="86400"></div>' +
+      '<div class="notify-f"><label class="notify-lab">全局配额（条/分钟）</label>' +
+      '<input type="number" data-ng="global_rate" value="' + esc(c.global_rate || 10) + '" min="1" max="120"></div>' +
+      '</div><p class="hint">冷却与全局配额用来避免 IP 抖动时刷屏、触发渠道限流' +
+      '（PushPlus 实名 1 分钟 5 次、MeoW 3 秒 1 条最严）。</p></div>' +
+      '<h3 style="margin:16px 0 8px">异常规则</h3>' + rulesHtml +
+      '<h3 style="margin:16px 0 8px">通知渠道（' + channels.length + '）</h3>' + chansHtml +
+      '<div class="form-group" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">' +
+      '<select id="notifyAddSel">' + addOpts + '</select>' +
+      '<button type="button" class="btn" data-act="add">添加渠道</button></div>' +
+      '<div class="notify-save-tip">配置改动与所有分组一样，统一点右上角 ' +
+      '<strong>「保存配置」</strong> 生效；「立即检测一次」用的是后端已保存的配置。</div>' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;margin:12px 0">' +
+      '<button type="button" class="btn" data-act="dispatch">立即检测一次</button>' +
+      '<button type="button" class="btn ghost" data-act="refresh">刷新状态</button></div>' +
+      '<div class="diag-box" style="margin:10px 0">检测 ' + num(st.ticks || 0) +
+      ' 轮 · 告警 ' + num(st.alerts || 0) + ' 条 · 成功 ' + num(st.sent || 0) +
+      ' · 失败 ' + num(st.failed || 0) + ' · 抑制 ' + num(st.suppressed || 0) +
+      ' · 启用渠道 ' + num(st.channels_enabled || 0) +
+      (st.last_error ? '<br>上次错误：' + esc(st.last_error) : '') + '</div>' +
+      '<h3 style="margin:16px 0 8px">最近预警</h3>' +
+      '<table class="notify-hist"><thead><tr><th>时间</th><th>规则</th><th>IP</th>' +
+      '<th>标题</th><th>成功/总数</th></tr></thead><tbody>' +
+      (hist || '<tr><td colspan="5">暂无预警记录</td></tr>') + '</tbody></table>';
+  }
+  function collectNotify() {
+    var host = $('notifyPane');
+    var cfg = { rules: { scan: {}, traffic: {} }, channels: [] };
+    Array.prototype.forEach.call(host.querySelectorAll('[data-ng]'), function (el) {
+      cfg[el.getAttribute('data-ng')] = el.type === 'checkbox' ? el.checked : Number(el.value);
+    });
+    Array.prototype.forEach.call(host.querySelectorAll('[data-nr]'), function (el) {
+      var p = el.getAttribute('data-nr').split('.');
+      cfg.rules[p[0]][p[1]] = el.type === 'checkbox' ? el.checked : Number(el.value);
+    });
+    var byId = {};
+    Array.prototype.forEach.call(host.querySelectorAll('[data-nf]'), function (el) {
+      var cid = el.getAttribute('data-cid');
+      if (!byId[cid]) byId[cid] = { id: cid };
+      byId[cid][el.getAttribute('data-nf')] =
+        el.type === 'checkbox' ? el.checked : el.value;
+    });
+    Object.keys(byId).forEach(function (k) { cfg.channels.push(byId[k]); });
+    return cfg;
+  }
+  function notifyAddChannel() {
+    var sel = $('notifyAddSel');
+    if (!sel || !S.notify) return;
+    var m = notifyChMeta(sel.value);
+    var ch = { id: 'ch-' + Date.now().toString(36), channel: sel.value,
+               enabled: true, title_prefix: '[ipsense]' };
+    (m.fields || []).forEach(function (f) { ch[f.key] = f.default || ''; });
+    var box = document.createElement('div');
+    box.innerHTML = notifyChannelHtml(ch);
+    var host = $('notifyPane');
+    host.insertBefore(box.firstChild, sel.parentNode);
+  }
+  function bindNotify() {
+    var host = $('notifyPane');
+    if (!host) return;
+    host.innerHTML = '<p class="hint">正在读取预警配置…</p>';
+    api('api/notify/state').then(function (r) {
+      if (!r.ok) throw new Error(r.msg || '读取失败');
+      S.notify = r;
+      renderNotifyPane();
+    }).catch(function (e) {
+      host.innerHTML = '<div class="diag-box">读取失败：' + esc(e.message) +
+        '。预警通知为可选功能，不影响采集与统计。</div>';
+    });
+    if (host.__bound) return;
+    host.__bound = true;
+    host.onclick = function (e) {
+      var t = e.target;
+      var act = t && t.getAttribute ? t.getAttribute('data-act') : null;
+      if (!act) return;
+      if (act === 'add') { notifyAddChannel(); return; }
+      if (act === 'del') {
+        var card = t.closest ? t.closest('.notify-ch') : null;
+        if (card && card.parentNode) card.parentNode.removeChild(card);
+        return;
+      }
+      if (act === 'refresh') { bindNotify(); return; }
+      // 2.0.0 返工：面板内已不再放独立「保存」按钮（统一走右上角），
+      // 保留分支仅用于兼容旧缓存页面残留的按钮，不影响新交互与红线。
+      if (act === 'save') {
+        api('api/notify/config', 'POST', collectNotify()).then(function (r) {
+          if (!r.ok) throw new Error(r.msg || '保存失败');
+          toast('预警配置已保存 · ' + (r.changed || []).length + ' 项变更');
+          bindNotify();
+        }).catch(function (er) { toast('保存失败：' + er.message); });
+        return;
+      }
+      if (act === 'dispatch') {
+        api('api/notify/dispatch', 'POST', {}).then(function (r) {
+          toast('已触发一次检测：' + ((r.data && r.data.alerts) || 0) + ' 条告警');
+          setTimeout(bindNotify, 800);
+        }).catch(function (er) { toast('检测失败：' + er.message); });
+        return;
+      }
+      if (act === 'test') {
+        var cid = t.getAttribute('data-cid');
+        var one = collectNotify().channels.filter(function (x) {
+          return x.id === cid;
+        })[0];
+        if (!one) { toast('找不到该渠道'); return; }
+        t.disabled = true; t.textContent = '发送中…';
+        api('api/notify/test', 'POST', { channel: one }).then(function (r) {
+          t.disabled = false; t.textContent = '测试发送';
+          toast(r.ok ? ('测试发送成功：' + (r.msg || '')) :
+                       ('测试失败：' + (r.msg || '')));
+          setTimeout(bindNotify, 600);
+        }).catch(function (er) {
+          t.disabled = false; t.textContent = '测试发送';
+          toast('测试失败：' + er.message);
+        });
+      }
+    };
+  }
+
+  // 2.0.0 返工：设置抽屉「未保存修改」提示。只做视觉标记，
+  // 不弹阻塞式 confirm，避免打断低配 WebView 与自动化验收。
+  function updateSaveBadge() {
+    var badge = $('saveBadge'), btn = $('btnSaveCfg');
+    if (badge) badge.hidden = !S.settingsDirty;
+    if (btn) btn.classList.toggle('dirty', !!S.settingsDirty);
+  }
+  // 2.0.0 返工：一次点击统一保存时，顺带收集预警通知的独立配置。
+  // 预警输入用 data-ng / data-nr / data-nf，与 collectConfig() 的
+  // data-k 完全不重叠，不会串值；面板未加载时返回 null 跳过。
+  function collectNotifySafe() {
+    var host = $('notifyPane');
+    if (!host || !S.notify || !host.querySelector('[data-ng]')) return null;
+    try { return collectNotify(); } catch (e) { return null; }
+  }
   function renderSettings(sources) {
     S.mapKeysDraft = {};
     S.mapCustom = JSON.parse(JSON.stringify(S.cfg.map_custom || []));
@@ -3688,7 +4232,16 @@
         (t.exists ? (t.error ? '读取异常' : '已读取 ' + num(t.count) + ' 条') : '文件不存在') + '</span></div>';
     }).join('');
     var html = '' +
-      '<div class="form-group"><h3>数据来源</h3><p class="hint">采集器在保存配置后自动重载，无需重启应用。' +
+      '<div class="settings-tabs" id="settingsTabs">' +
+      '<button type="button" class="settings-tab on" data-pane="data">数据来源</button>' +
+      '<button type="button" class="settings-tab" data-pane="geo">归属核验</button>' +
+      '<button type="button" class="settings-tab" data-pane="map">地图与位置</button>' +
+      '<button type="button" class="settings-tab" data-pane="collect">采集策略</button>' +
+      '<button type="button" class="settings-tab" data-pane="diag">诊断与反馈</button>' +
+      '<button type="button" class="settings-tab" data-pane="notify">预警通知</button>' +
+      '</div>' +
+      '<div class="settings-pane on" data-pane="data">' +
+      '<div class="form-group"><h3>数据来源</h3><p class="hint">采集器在点右上角「保存配置」后自动重载，无需重启应用。' +
       '路由器请把 syslog 指向本机 UDP 端口；也可把日志文件放进导入目录。</p>' +
       sw('source_local_auth', '本机日志 · SSH 认证', '/var/log/auth.log，需 root 读取') +
       sw('source_local_web', '本机日志 · Web 访问', 'fnOS nginx access.log') +
@@ -3700,6 +4253,15 @@
       fld('knock_app_dir', '敲门网关日志目录', 'text',
           '填敲门网关运行目录下的 logs 目录。日志开关请在敲门应用里开启，本应用不会替你改对方配置。') +
       fld('knock_app_port', '敲门网关入口端口', 'number') +
+      '<div class="form-group" style="margin:14px 0 0;padding:12px;border:1px solid var(--line);border-radius:10px">' +
+      '<h3 style="margin:0 0 8px">Lucky 日志（解析器框架 · 预留）</h3>' +
+      '<p class="hint">真机只读取证确认当前 lucky 无落盘文本日志，本批次只落地解析器框架与两个新来源，' +
+      '不接实时 tail、不改 lucky 任何配置。等后台「日志中心」提供原始文本样例后再校准正则并接入。</p>' +
+      sw('source_lucky_web', 'Lucky 反代 Web 日志', '预留开关，默认关闭；当前不接 tail') +
+      sw('source_lucky_sys', 'Lucky 系统运行日志', '预留开关，默认关闭；当前不接 tail') +
+      fld('lucky_web_log', 'Lucky 反代日志路径', 'text', '仅当 lucky 开启日志落盘并填写绝对路径后才有意义，留空不启用。') +
+      fld('lucky_sys_log', 'Lucky 系统日志路径', 'text', '同上；应用不会替你创建或修改 lucky 日志文件。') +
+      '</div>' +
       sw('source_fnos_audit', 'fnOS 结构化登录审计', '解析 auth.log 里的 TRIMEVENT JSON，可区分登录成功与认证失败') +
       sw('source_auth_rotated', '回填 SSH 轮转日志', '读取 auth.log.1 / .gz 里的历史失败登录，找回被漏采的攻击记录') +
       fld('auth_rotated_max', '轮转日志读取份数', 'number') +
@@ -3723,15 +4285,17 @@
       ' · 局域网设备 ' + num(sources && sources.lan ? sources.lan.count : 0) + ' 条</p>' +
       '</div>' +
       summaryServiceHtml() +
-      '<div class="form-group"><h3>归属信息源 · 多源交叉校验</h3>' +
-      '<p class="hint">离线库对运营商网段重分配更新滞后。启用后按 ' +
-      'ip-api.com / ip.sb / ipinfo.io / 本地库 共 4 票多数派裁决，' +
-      '结果缓存并回写历史事件；在线不可用时自动回退离线库，不影响采集。</p>' +
-      sw('geo_verify_enabled', '启用在线多源校验', '后台低频校验高频公网 IP，遵守在线源限流') +
+      '</div>' +
+      '<div class="settings-pane" data-pane="geo">' +
+      '<div class="form-group"><h3>归属信息源 · 离线主裁决 + 参考源</h3>' +
+      '<p class="hint">归属以内置 ip2region 离线库为主裁决，实测比两家在线源更稳；' +
+      '`ip.sb` 仅作参考补坐标与空缺字段，不改写国家 / 省 / 市。' +
+      '参考源分歧只降级置信度，在线不可用时完全回退离线库，不影响采集。</p>' +
+      sw('geo_verify_enabled', '启用在线参考校验', '后台低频查询 ip.sb 补坐标与运营商，归属仍以离线库为准') +
       sw('geo_verify_auto', '新 IP 首次出现即自动核验',
          '1.1.15：新公网 IP 一入库就进后台队列，不用再手动点「批量校验高频 IP」') +
       sw('geo_district_enabled', '补充探测区级信息',
-         '用独立源补区县（如蜀山区），不参与省 / 市 4 票裁决，避免把国内库偏差带进来') +
+         '用独立源补区县（如蜀山区），不参与归属裁决，避免把国内库偏差带进来') +
       fld('geo_verify_days', '核验结果有效期（天）', 'number') +
       fld('geo_verify_batch', '后台批量校验 IP 数', 'number') +
       '<div id="geoSrcBox" class="diag-box"></div>' +
@@ -3742,25 +4306,46 @@
       '查看每个数据源的原始判定与置信度。「订正历史归属」会清洗旧版本留下的英文国名、IPv6 省份与错位坐标。' +
       '出口 IP 归属不等于设备物理位置。</p>' +
       '</div>' +
+      '</div>' +
+      '<div class="settings-pane" data-pane="map">' +
       '<div class="form-group"><h3>地图与位置</h3>' +
       '<p class="hint">渲染全球范围需使用合规底图服务。请到 ' +
       '<a href="https://lbs.qq.com/dev/console/application/mine" target="_blank" rel="noopener" style="color:var(--blue-l)">腾讯位置服务控制台</a> ' +
       '创建应用并申请 WebGL JavaScript GL 的 key，填到下方后刷新页面。' +
-      '未配置时使用「坐标散点示意」（不绘制国界），数据功能不受影响。' +
+      '未配置时使用「卫星质感坐标散点示意」（纯抽象背景、不绘制任何边界、不拉取外部影像），数据功能不受影响。' +
       '请为 key 配置 Referer 白名单，不要提交到公开仓库。</p>' +
       mapServiceHtml() +
+      '<div class="form-group" style="margin:14px 0 0;padding:12px;border:1px solid var(--line);border-radius:10px">' +
+      '<h3 style="margin:0 0 8px">底图样式</h3>' +
+      '<div class="field"><label>底图类型</label><select data-k="map_base" id="cfgMapBase">' +
+      '<option value="satellite"' + (S.cfg.map_base === 'vector' ? '' : ' selected') + '>卫星影像（默认 · 无国界标注）</option>' +
+      '<option value="vector"' + (S.cfg.map_base === 'vector' ? ' selected' : '') + '>矢量底图（含官方行政区划）</option>' +
+      '</select></div>' +
+      '<p class="compliance-note">卫星影像仅通过腾讯地图 GL JS 官方 SDK 的 ' +
+      '<code>setBaseMap</code> 接入，不内置任何有效 KEY、不拉取裸瓦片、不篡改底图、不自绘或改绘国界 / 海岸线 / 行政区划边界；' +
+      '边界一律以官方合规底图为准，版权与审图号由官方底图承载并保留，不隐藏、不裁剪。' +
+      '请自行申请浏览器端 Key 并配置 Referer / 域名白名单；禁止接入 Google / Bing / Esri / OSM 等境外影像源。' +
+      '卫星底图使用官方 features:[\'base\'] 只加载影像主体，不叠加国界 / 省界 / 行政区划标注；' +
+      '未配置 KEY 的降级路径改为抽象卫星质感背景，同样不绘制任何边界、不拉取任何外部影像瓦片；' +
+      '当前仅腾讯 GL JS 支持卫星底图，其它引擎保持矢量底图。' +
+      '公开发布 / 商用前请另行确认商业授权与主管部门要求。</p>' +
+      '</div>' +
       '<div class="form-group" style="margin:14px 0 0;padding:12px;border:1px solid var(--line);border-radius:10px">' +
       '<h3 style="margin:0 0 8px">弧线与性能</h3>' +
       '<p class="hint">弧线弯曲幅度与距离成比例，近距离不再鼓出大回环；' +
       '境内按省、境外按国家合并来源，尾迹由浅到深指向本机，细线不遮挡底图地名。</p>' +
       fld('map_arc_limit', '每张地图最多显示弧线（5–60）', 'number') +
       fld('map_arc_bend', '弧线弯曲幅度（0.04–0.28，越大越弯）', 'number', '', '0.01') +
-      sw('map_arc_animate', '散点模式流动光点', '关闭可进一步降低低配设备的 CPU 占用') +
+      sw('map_arc_animate', '弧线流动光点', '底图 / 散点两条路径通用；关闭可进一步降低低配设备的 CPU 占用') +
       fld('map_refresh', '实时事件刷新间隔（秒）', 'number') +
       fld('map_heavy_refresh', '地图 / 统计刷新间隔（秒）', 'number') +
-      '<p class="hint" style="margin:6px 0 0">底图模式为静态弧线，不做逐帧动画；' +
+      '<p class="hint" style="margin:6px 0 0">2.0.0 起底图 / 散点两条路径都有流动光点；' +
+      '动效覆盖层只画应用自有数据（IP 点 / 连线 / 本机装饰环），不绘制任何边界。' +
       '页面切到后台自动暂停刷新，回到前台立即补一次。' +
       '诊断面板可看当前绘制条数、合并 / 省略数量与重绘耗时。</p>' +
+      sw('map_fx', '地图动效覆盖层', '总开关：关闭后不再有任何逐帧绘制，低配设备可关') +
+      sw('map_fx_scan', '出口 IP 雷达波纹', '以本机 / 出口 IP 为中心一圈圈向外扩散的椭圆波纹') +
+      sw('map_fx_reveal', '每 5 秒渐显新坐标点', '只在覆盖层渐显渐隐，不新增 / 不删除底图几何') +
       '</div>' +
       '<div style="margin:14px 0 4px;padding:12px;border:1px solid var(--line);border-radius:10px">' +
       '<h3 style="margin:0 0 8px">本机位置</h3>' +
@@ -3773,7 +4358,7 @@
       '</div>' +
       fld('home_lat', '本机纬度', 'number') + fld('home_lng', '本机经度', 'number') +
       fld('home_label', '本机标注', 'text') +
-      '<p class="hint">保存后立即生效，无需刷新页面。</p>' +
+      '<p class="hint">本机位置与上方所有分组的配置，统一点右上角「保存配置」生效，无需刷新页面。</p>' +
       '</div>' +
       '<div class="form-group"><h3>底图诊断</h3>' +
       '<p class="hint">填了 key 仍看不到地图时，先看下面的状态，再对照排查项逐条检查。</p>' +
@@ -3786,16 +4371,20 @@
       '④ 当日调用配额用尽；⑤ 上方「底图资源请求」显示被拒，基本可确定是白名单或配额。' +
       '以上只影响底图，采集与统计功能不受影响。</p>' +
       '</div>' +
+      '</div>' +
+      '<div class="settings-pane" data-pane="collect">' +
       '<div class="form-group"><h3>采集策略</h3>' +
       fld('keep_days', '记录保留天数', 'number') +
       fld('ignore_ips', '忽略的 IP（逗号分隔）', 'text') +
+      sw('filter_self_web', '过滤软件自身访问',
+         '1.1.30：丢弃 /app/ipsense/ 页面与 API 轮询，避免污染访问统计') +
       '<p class="hint">当前数据源状态：' +
       (sources && sources.syslog_ok ? 'Syslog 端口 ' + sources.syslog_port + ' 监听中' : 'Syslog 未监听') +
       ' · 端口敲门 ' + (sources && sources.knock_installed ? '已安装' : '未安装（预留）') +
       ' · 敲门网关 ' + (sources && sources.knock_app_enabled ? '已接入' : '未接入') + '</p>' + src +
       '</div>' +
       '<div class="form-group"><h3>区级归属校验接口（可选）</h3>' +
-      '<p class="hint">三家国际源与本地离线库都不返回区县。这里可以填一个自己可用的 ' +
+      '<p class="hint">离线库与在线参考源都不返回区县。这里可以填一个自己可用的 ' +
       'JSON 接口，在线核验时自动取「区」写回该 IP 的历史记录。' +
       'tool.hiofd.com 查询页能查到区县，但接口带反爬签名、不是公开 API，' +
       '不内置自动调用；请用画像里的「在线校验」人工核对后回填。</p>' +
@@ -3804,11 +4393,14 @@
       fld('geo_district_field', '区县字段路径', 'text', '例 data.district 或 district，支持点号层级') +
       '</div>' +
       '<div style="display:flex;gap:10px;flex-wrap:wrap">' +
-      '<button class="btn primary" id="btnSaveCfg">保存配置</button>' +
       '<button class="btn" id="btnReload">重载采集器</button>' +
       '<button class="btn ghost" id="btnExport2">导出 CSV</button>' +
       '<button class="btn ghost" id="btnBackfill">回填历史日志</button></div>' +
+      '<p class="hint" style="margin:8px 0 0">以上三项为即时操作，不需要保存；' +
+      '任何分组里的配置改动，统一点右上角「保存配置」生效。</p>' +
       // 1.1.15：问题反馈出口放在设置最底部，一份文件就能定位「打不开 / 没数据 / 底图异常」
+      '</div>' +
+      '<div class="settings-pane" data-pane="diag">' +
       '<div class="form-group"><h3>问题反馈 · 运行日志一键导出</h3>' +
       '<p class="hint">把主运行日志、兜底副本、生命周期日志、应用状态与数据源状态合成一份纯文本。' +
       '地图 KEY / 令牌 / 口令会被抹除，来访 IP 只保留前两段（例 220.205.*.*），' +
@@ -3828,13 +4420,24 @@
       '<div id="diagPreview" class="diag-box" style="display:none;margin-top:10px"></div>' +
       '<p class="hint" style="margin:8px 0 0">命令行用户也可以用仓库里的 ' +
       '<code>tools/diag_bundle.sh</code> 收集同样的信息并自动打 tar.gz。</p>' +
+      '</div>' +
+      '</div>' +
+      '<div class="settings-pane" data-pane="notify">' +
+      '<div id="notifyPane"></div>' +
       '</div>';
     $('settingsBody').innerHTML = html;
+    // 2.0.0 返工：保存按钮移到抽屉右上角后，任何 pane 的改动都打「未保存」标记
+    S.settingsDirty = false;
+    updateSaveBadge();
+    $('settingsBody').oninput = function () { S.settingsDirty = true; updateSaveBadge(); };
+    $('settingsBody').onchange = function () { S.settingsDirty = true; updateSaveBadge(); };
+    initSettingsTabs();
     bindMapService();
     bindSummary();
     renderMapDiag();
     renderLocate();
     renderGeoSources();
+    bindNotify();
     $('btnGeoRefresh').onclick = function () {
       api('api/geo/refresh', 'POST', {}).then(function (r) {
         toast(r.msg || '已加入后台校验队列');
@@ -3959,6 +4562,16 @@
     S.arcLimit = Math.max(5, Math.min(60, Number(S.cfg.map_arc_limit) || 16));
     S.arcBend = Math.max(0.04, Math.min(0.28, Number(S.cfg.map_arc_bend) || 0.12));
     S.arcAnimate = S.cfg.map_arc_animate !== false;
+    // 2.0.0 B4：动效覆盖层三个开关（默认全开，关掉即零逐帧绘制）
+    S.fx.on = S.cfg.map_fx !== false;
+    S.fx.scan = S.cfg.map_fx_scan !== false;
+    S.fx.revealOn = S.cfg.map_fx_reveal !== false;
+    // 2.0.0 返工：默认卫星影像，仅显式选「矢量底图」才回退；
+    // 卫星走官方 features:['base']，不叠加国界 / 省界标注。
+    S.mapBase = S.cfg.map_base === 'vector' ? 'vector' : 'satellite';
+    // 2.0.0 返工：动效总开关真正启停逐帧定时器；
+    // 定时器从启动起常驻，不再被「底图加载完成」停掉。
+    if (S.fx.on) startCanvasAnim(); else stopCanvasAnim();
   }
   function collectConfig() {
     var patch = {};
@@ -3979,25 +4592,39 @@
     return patch;
   }
   function saveConfig() {
+    // 2.0.0 返工：右上角「保存配置」一次点完，全局配置 + 预警通知一起提交。
+    // 两条链路输入域互不重叠（data-k vs data-ng/data-nr/data-nf），
+    // 不会出现「改了地图与位置还要切到采集策略去保存」的割裂。
+    var notifyPatch = collectNotifySafe();
     api('api/config', 'POST', collectConfig()).then(function (r) {
       if (!r.ok) throw new Error(r.msg || '保存失败');
       var changed = r.changed || [];
-      toast('配置已保存 · ' + changed.length + ' 项变更');
       return api('api/config').then(function (c) {
-        S.cfg = c.data;
-        S.summary = c.data.summary || S.summary;
-        S.mapConfigured = !!c.data.map_configured;
-        S.mapProvider = c.data.map_provider || 'tencent';
-        S.mapKeysDraft = null; S.mapCustom = null;
-        S.home = { lat: c.data.home_lat, lng: c.data.home_lng, label: c.data.home_label };
-        applyCfg();
-        closeDrawers(); loadAll();
-        requestMapDraw(true);
-        // 1.1.8：服务商 / KEY / 自定义接口任一变更，都销毁旧引擎后重建
-        var mapChanged = ['map_provider', 'map_keys', 'map_custom', 'map_key']
-          .some(function (k) { return changed.indexOf(k) >= 0; });
-        if (mapChanged || (!mapIsConfigured() && S.tmapReady)) rebuildMap();
-        updateBanner();
+        var next = notifyPatch
+          ? api('api/notify/config', 'POST', notifyPatch).then(function (nr) {
+              if (!nr.ok) throw new Error('预警配置：' + (nr.msg || '保存失败'));
+              return nr;
+            })
+          : Promise.resolve(null);
+        return next.then(function (nr) {
+          toast('配置已保存 · ' + changed.length + ' 项变更' +
+                (nr ? ' · 预警配置已同步' : ''));
+          S.cfg = c.data;
+          S.summary = c.data.summary || S.summary;
+          S.mapConfigured = !!c.data.map_configured;
+          S.mapProvider = c.data.map_provider || 'tencent';
+          S.mapKeysDraft = null; S.mapCustom = null;
+          S.home = { lat: c.data.home_lat, lng: c.data.home_lng, label: c.data.home_label };
+          S.settingsDirty = false; updateSaveBadge();
+          applyCfg();
+          closeDrawers(); loadAll();
+          requestMapDraw(true);
+          // 1.1.8：服务商 / KEY / 自定义接口任一变更，都销毁旧引擎后重建
+          var mapChanged = ['map_provider', 'map_keys', 'map_custom', 'map_key', 'map_base']
+            .some(function (k) { return changed.indexOf(k) >= 0; });
+          if (mapChanged || (!mapIsConfigured() && S.tmapReady)) rebuildMap();
+          updateBanner();
+        });
       });
     }).catch(function (e) { toast('保存失败：' + e.message); });
   }
@@ -4617,6 +5244,82 @@
     $('sponsorBox').setAttribute('aria-hidden', 'true');
   }
 
+  // ---- 2.0.0 B2：主界面平级 tab ----
+  // 地图 SDK 容器必须始终有真实宽高，所以四个 view 用 CSS grid 叠加，
+  // 只切 active 的透明度 / 可见性，绝不用 display:none（1.1.21 白屏坑）。
+  // 「单页滚动」把 .views 退回块级流，四个 view 依次铺开，等于旧版布局。
+  var VIEW_IDS = ['overview', 'analysis', 'records', 'tools'];
+  function lsGet(k, d) {
+    try { return localStorage.getItem(k) || d; } catch (e) { return d; }
+  }
+  function lsSet(k, v) {
+    try { localStorage.setItem(k, v); } catch (e) {}
+  }
+  function applyLayout() {
+    var views = $('views'), nav = $('mainTabs');
+    if (!views || !nav) return;
+    var scroll = S.layout === 'scroll';
+    views.classList.toggle('layout-scroll', scroll);
+    nav.classList.toggle('scroll', scroll);
+    $('btnLayout').textContent = '布局：' + (scroll ? '单页滚动' : 'Tab 分布');
+  }
+  function switchMainView(v) {
+    if (VIEW_IDS.indexOf(v) < 0) return;
+    S.mainView = v;
+    lsSet('ipsense.mainView', v);
+    Array.prototype.forEach.call(document.querySelectorAll('#views .view'), function (el) {
+      el.classList.toggle('active', el.getAttribute('data-view') === v);
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('#mainTabs .main-tab'), function (b) {
+      var on = b.getAttribute('data-view') === v;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    // 切回态势总览时容器尺寸没变（grid 叠加），无需重建 SDK；
+    // 仍触发一次 resize，兼容 SDK 在隐藏期间暂停了布局计算。
+    if (v === 'overview' && S.tmapReady) {
+      try { S.world.resize(); S.cn.resize(); if (S.geoMap) S.geoMap.resize(); }
+      catch (e) {}
+    }
+  }
+  function initMainTabs() {
+    var tabs = $('mainTabs'), views = $('views');
+    if (!tabs || !views) return;               // 旧版页面 / 预览降级
+    S.mainView = lsGet('ipsense.mainView', 'overview');
+    if (VIEW_IDS.indexOf(S.mainView) < 0) S.mainView = 'overview';
+    S.layout = lsGet('ipsense.layout', 'tabs') === 'scroll' ? 'scroll' : 'tabs';
+    applyLayout();
+    switchMainView(S.mainView);
+    tabs.onclick = function (e) {
+      var b = e.target, t = null, lay = false;
+      while (b && b !== tabs) {
+        if (b.getAttribute && b.getAttribute('data-view')) { t = b; break; }
+        if (b.id === 'btnLayout') lay = true;
+        b = b.parentNode;
+      }
+      if (t) { switchMainView(t.getAttribute('data-view')); return; }
+      if (lay) {
+        S.layout = S.layout === 'tabs' ? 'scroll' : 'tabs';
+        lsSet('ipsense.layout', S.layout);
+        applyLayout();
+      }
+    };
+    // 04 工具配置：复用顶栏既有按钮，避免重复绑定两套逻辑
+    var tools = $('viewTools');
+    if (tools) tools.onclick = function (e) {
+      var b = e.target, t = null;
+      while (b && b !== tools) {
+        if (b.getAttribute && b.getAttribute('data-act')) { t = b; break; }
+        b = b.parentNode;
+      }
+      if (!t) return;
+      var map = { settings: 'btnSettings', orders: 'btnOrders', refresh: 'btnRefresh',
+                  export: 'btnExport', about: 'btnAbout' };
+      var id = map[t.getAttribute('data-act')];
+      if (id && $(id)) $(id).click();
+    };
+  }
+
   function bind() {
     bindCanvasPicks();
     bindMapMode();
@@ -4882,6 +5585,7 @@
     });
     $('trendSvg').addEventListener('mouseleave', function () { $('chartTip').style.display = 'none'; });
     applyUiPref();   // 1.1.18：恢复上次的筛选设定（必须在 loadAll 之前）
+    initMainTabs();  // 2.0.0 B2：平级 tab / 布局切换 / 工具卡入口
   }
 
   // ---- 启动 ----
@@ -4899,7 +5603,9 @@
     bind();
     setMapState('off');
     initTMap('');
-    loadAll();
+    // 2.0.0 B4：首帧加载遮罩在首轮数据 / 底图就绪后淡出，6 秒兜底防卡死
+    loadAll().then(hideMapLoading).catch(hideMapLoading);
+    setTimeout(hideMapLoading, 6000);
     // 1.1.11：尽早与飞牛桌面建立 penpal 桥（父窗口 connectToChild 只有 60s 握手窗口）。
     // 失败不报错，点击「选择文件夹」时会再试一次，仍失败则降级为应用内原生卡片。
     getBridge().catch(function () {});

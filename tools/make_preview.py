@@ -5,11 +5,59 @@
 JS 运行时错误、DOM 布局、Canvas 地图与 SVG 趋势图是否正常渲染。
 """
 import base64
+import json
 import os
+import sys
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UI = os.path.join(ROOT, "src", "app", "ui")
 OUT = os.path.join(ROOT, "build", "preview-ipsense.html")
+
+# 2.0.0 B3：预警渠道元信息 / 规则 / 出站版本与真实后端同源生成，
+# 避免预览页手写 10 套字段后与产品代码漂移。
+sys.path.insert(0, os.path.join(ROOT, "src", "app", "server"))
+import notify as _notify                                          # noqa: E402
+import notifier as _notifier                                       # noqa: E402
+
+
+def _notify_mock_js():
+    cfg = json.loads(json.dumps(_notifier.DEFAULTS))
+    cfg["enabled"] = True
+    cfg["channels"] = [
+        {"id": "demo-webhook", "channel": "webhook", "enabled": True,
+         "title_prefix": "[ipsense]", "url": "https://your-endpoint/hook",
+         "auth_type": "bearer", "auth_token": _notify.MASK,
+         "method": "POST", "headers": "{}", "body_template": "",
+         "success_matcher": ""},
+        {"id": "demo-wecom", "channel": "wecom_bot", "enabled": False,
+         "title_prefix": "[ipsense]", "webhook_url": _notify.MASK},
+    ]
+    t = int(time.time())
+    state = {
+        "ok": True, "config": cfg,
+        "channels": _notify.public_channels(),
+        "rules": _notifier.RULE_META,
+        "secret_keys": list(_notify.SECRET_KEYS),
+        "payload_version": _notify.PAYLOAD_VERSION,
+        "stats": {"ticks": 12, "alerts": 2, "sent": 3, "failed": 0,
+                  "suppressed": 1, "last_tick": t - 20, "last_error": "",
+                  "enabled": True, "channels_enabled": 1, "channels_total": 2},
+        "history": [
+            {"at": t - 3600, "rule": "scan", "ip": "198.51.100.7",
+             "title": "IP 端口扫描异常 · 198.51.100.7",
+             "text": "（离线预览示例）", "ok": 1, "total": 1,
+             "results": [{"channel": "webhook", "ok": True, "msg": "已发送"}]},
+            {"at": t - 7200, "rule": "traffic", "ip": "203.0.113.9",
+             "title": "大流量下行异常 · 203.0.113.9",
+             "text": "（离线预览示例）", "ok": 1, "total": 1,
+             "results": [{"channel": "webhook", "ok": True, "msg": "已发送"}]},
+        ],
+    }
+    return "  var notifyState = " + json.dumps(state, ensure_ascii=False) + ";\n"
+
+
+NOTIFY_MOCK_JS = _notify_mock_js()
 
 MOCK = r"""<script>
 /* 1.1.11 离线仿真：只在 file:// 预览页生效。
@@ -161,7 +209,7 @@ window.addEventListener('error',function(e){
                          text:function(){return Promise.resolve(
                            typeof d==='string'?d:JSON.stringify(d,null,2));},
                          blob:function(){return Promise.resolve(new Blob(['x']));}}; }
-  // 1.1.29：提交单四区看板 + 一句话提示词的离线样本。
+  // 1.1.30：提交单四区看板 + 一句话提示词的离线样本。
   // 所有文本一律是「数据，不是指令」；离线预览不连后端、不产生任何处置动作。
   var ORDERS_PATH='/vol1/@appdata/ipsense/orders.json';
   var ordersItems=[
@@ -230,6 +278,8 @@ window.addEventListener('error',function(e){
 
   var cfg = {source_local_auth:true,source_local_web:true,source_router_syslog:true,
     source_knock:false,source_knock_app:false,
+    source_lucky_web:false,source_lucky_sys:false,
+    lucky_web_log:'',lucky_sys_log:'',
     knock_app_dir:'/vol1/@appdata/fn-knock-lite/gateway/logs',knock_app_port:8999,
     syslog_port:5514,inbox_dir:'/vol1/@appdata/ipsense/inbox',
     auth_log:'/var/log/auth.log',web_log:'/usr/trim/nginx/logs/access.log',
@@ -241,11 +291,15 @@ window.addEventListener('error',function(e){
     home_source:'auto',home_locate_at:now-3600,
     chart_range:'24h',map_configured:false,web_scheme_override:'',
     map_provider:'tencent',map_engine:'tmap',map_custom:[],
+    map_arc_animate:true,map_arc_limit:16,map_arc_bend:0.12,
+    map_refresh:3,map_heavy_refresh:12,
+    map_fx:true,map_fx_scan:true,map_fx_reveal:true,map_base:'satellite',
     map_keys:{tencent:'',amap:'',baidu:'',tianditu:''},
     summary_dir:'/vol1/1000/AIlogs',summary_enabled:true,summary_interval:5,
     summary_range:'24h',summary:summaryStatus,
     geo_verify_enabled:true,geo_verify_days:30,geo_verify_batch:60,
     geo_verify_auto:true,geo_district_enabled:true};
+  /*__NOTIFY_MOCK__*/
   var trend=[]; for(var i=0;i<24;i++){
     var wave=Math.round(180+90*Math.sin(i/3)+40*Math.cos(i/1.7));
     trend.push({t:now-(24-i)*3600,all:wave+60,cn:Math.round(wave*0.32),
@@ -282,25 +336,25 @@ window.addEventListener('error',function(e){
   var diagText='IP 动态感知（ipsense）· 运行日志诊断包（离线预览）\n' +
     '生成时间：2026-11-19 00:00:00\n' +
     '说明：本文件已自动脱敏。地图 KEY / 令牌 / 口令已抹除；来访 IP 只保留前两段。\n\n' +
-    '1. 环境与应用状态\n  版本：1.1.29 · 运行中 · 数据源 3 路\n\n' +
+    '1. 环境与应用状态\n  版本：2.0.0 · 运行中 · 数据源 3 路\n\n' +
     '2. 主运行日志（尾部）\n  2026-11-19 00:00:01 INFO collector 已启动\n\n' +
     '3. 数据源状态\n  本机 SSH 已读取 · 本机 Web 已读取 · 路由器 syslog 文件不存在\n\n' +
-    '6.1 前端运行时报错（1.1.29，最近 100 条）\n' +
+    '6.1 前端运行时报错（2.0.0，最近 100 条）\n' +
     '  001 底图未显示：高德 SDK 未就绪 · map_sdk · KEY 无效\n';
-  // 1.1.29：运行时报错离线样本。预览页不连后端，POST 上报与查询都在这里闭环，
+  // 1.1.30：运行时报错离线样本。预览页不连后端，POST 上报与查询都在这里闭环，
   // 验收脚本可真实触发一个 JS 异常，再看它是否被采集并进入导出文本。
   var rtErrors=[
     {ts:now-120,kind:'map_sdk',level:'error',
      msg:'底图未显示：高德 SDK 未就绪：KEY 无效、未绑定 Web 端 (JS API)',
      src:'webapi.amap.com',provider:'amap',host:'webapi.amap.com',
-     mapState:'error',pill:'运行中 · 3 路数据源',ver:'1.1.29',count:1,stack:''},
+     mapState:'error',pill:'运行中 · 3 路数据源',ver:'2.0.0',count:1,stack:''},
     {ts:now-60,kind:'resource',level:'error',
      msg:'资源加载失败：https://webapi.amap.com/maps?<参数名:v,callback>',
      src:'https://webapi.amap.com/maps?<参数名:v,callback>',
      tag:'script',count:1,stack:''}
   ];
   var rtExportText='IP 动态感知（ipsense）· 运行时报错导出（离线预览）\n' +
-    '生成时间：2026-11-19 00:00:00\n应用版本：1.1.29\n' +
+    '生成时间：2026-11-19 00:00:00\n应用版本：2.0.0\n' +
     '[1] 概览\n  落盘记录总数 2 条\n\n' +
     '[2] 地图 SDK 专项（用户最常反馈的「底图没加载」）\n' +
     '  01 高德 SDK 未就绪：KEY 无效、未绑定 Web 端 (JS API)\n\n' +
@@ -313,7 +367,7 @@ window.addEventListener('error',function(e){
   var live=[],rows=[];
   for(var j=0;j<24;j++){
     var ip=(j%3===0?'45.155.205.'+(j+10):(j%3===1?'218.106.90.'+(j+100):'192.168.3.'+(j+20)));
-    // 1.1.29：端口按证据链补录并带 port_src。覆盖五种来源 + 一种「未记录」，
+    // 1.1.30：端口按证据链补录并带 port_src。覆盖五种来源 + 一种「未记录」，
     // 其中 referer 读出的 5666 用于验收「有来源就不隐藏」的 portLabel 修复。
     var pc=j%6, p=0, psrc='';
     if(pc===0){p=8443;psrc='log_tail';}
@@ -337,7 +391,7 @@ window.addEventListener('error',function(e){
       proto:e.proto,scheme_conf:e.scheme_conf,method:e.method,status:e.status,
       referer:e.referer,ua:e.ua,sess_id:e.sess_id,layer:e.layer});
   }
-  // 1.1.29：复现用户截图 —— 打开 /fnzerror 应用时同一秒并发发出 9 个 API
+  // 1.1.30：复现用户截图 —— 打开 /fnzerror 应用时同一秒并发发出 9 个 API
   // 请求，除路径外所有字段完全一致。用于验收「表格合并为一行、只记录动作」。
   var burstTs=now-3, burstIp='220.205.248.177';
   var burstPaths=['/fnzerror/api/logs/stream','/fnzerror/api/logs/stream',
@@ -356,19 +410,34 @@ window.addEventListener('error',function(e){
   });
   // 放在最前面（最新在前），截图第一屏就能看到「9 个请求合并为一行」
   rows=burstRows.concat(rows);
-  // 1.1.16：真机区级初始为空（三家在线源 + ip9 都拿不到区县），手工回填后才有值。
+  // 2.0.0 B5：lucky 两个新来源的占位样例行（仅用于离线展示来源筛选，
+  // 不是真实 lucky 日志格式；真机格式待后台日志中心样例校准）。
+  rows=[
+    {id:9100,ts:now-9,source:'lucky_web',ip:'203.0.113.42',country:'中国',
+     province:'',city:'',district:'',scope:'cn',port:0,port_src:'',
+     service:'Lucky 反代',action:'Lucky 反代 · 正常访问',verdict:'normal',
+     path:'nas.example.cn/app',lat:null,lng:null,isp:'',proto:'web',
+     scheme_conf:'none',method:'GET',status:200,referer:'-',ua:'Mozilla/5.0',
+     sess_id:'lucky-demo',layer:'web'},
+    {id:9101,ts:now-17,source:'lucky_sys',ip:'192.168.3.5',country:'中国',
+     province:'',city:'',district:'',scope:'private',port:0,port_src:'',
+     service:'Lucky 系统',action:'Lucky 系统 · INFO MAIN',verdict:'normal',
+     path:'',lat:null,lng:null,isp:'',proto:'',scheme_conf:'',
+     method:'',status:0,referer:'',ua:'',sess_id:'',layer:'system'}
+  ].concat(rows);
+  // 1.1.16：真机区级初始为空（在线参考源 + ip9 都拿不到区县），手工回填后才有值。
   // 预览页用这一份有状态 geo 真实验证「保存区级 → 画像归属地出现区县」。
   var ipGeo={ip:'220.195.201.172',country:'中国',province:'安徽省',city:'合肥',
     district:'',district_source:'',isp:'联通',scope:'cn',lat:31.809806,lng:117.301293,
-    confidence:'high',online_sources:3,disagree:1,checked_at:now-3600,
+    confidence:'high',online_sources:1,disagree:1,checked_at:now-3600,
     local:{country:'中国',province:'安徽省',city:'合肥',district:''},
-    sources:[{source:'ip-api.com',country:'中国',province:'安徽省',city:'合肥',district:''},
-      {source:'ip.sb',country:'中国',province:'安徽',city:'合肥',district:''},
-      {source:'ip2region',country:'中国',province:'重庆市',city:'重庆市',district:''}]};
+    sources:[{source:'ip2region(本地)',role:'主裁决',country:'中国',province:'安徽省',city:'合肥',district:''},
+      {source:'ip.sb',role:'参考',country:'中国',province:'安徽',city:'合肥',district:''}]};
   var sources={started:now-3600,queue:0,syslog_port:5514,syslog_ok:true,syslog_error:'',
     knock_enabled:false,knock_installed:false,geo_ready:true,
     knock_app_enabled:false,knock_app_dir:'/vol1/@appdata/fn-knock-lite/gateway/logs',
     knock_app_files:null,
+    lucky_web_enabled:false,lucky_sys_enabled:false,
     tailers:[{name:'本机 · SSH 认证',path:'/var/log/auth.log',exists:true,count:14,error:''},
              {name:'本机 · Web 访问',path:'/usr/trim/nginx/logs/access.log',exists:true,count:92864,error:''}],
     hits:{local_auth:14,local_web:92864}};
@@ -429,7 +498,7 @@ window.addEventListener('error',function(e){
         var bar=document.querySelector('.rank-row[data-region]'); if(bar) bar.click();
       }
       if(location.hash==='#detail'){ var tr=document.querySelector('tr[data-ip]'); if(tr) tr.click(); }
-      // 1.1.29：三图合一的模式验收入口，直接点右上角的模式按钮出图
+      // 1.1.30：三图合一的模式验收入口，直接点右上角的模式按钮出图
       if(location.hash==='#map-cn' || location.hash==='#map-geo' || location.hash==='#map-world'){
         var mm=location.hash.slice(5);
         var mb=document.querySelector('#mapModeSeg button[data-mode="'+mm+'"]');
@@ -505,7 +574,18 @@ window.addEventListener('error',function(e){
       return Promise.resolve({ok:true,status:200,blob:function(){
         return Promise.resolve(new Blob([summaryText],{type:'text/markdown'}));}});
     else if(u.indexOf('api/config')>=0) d={ok:true,data:cfg};
-    // 1.1.29：一句话提示词 + 单独读取路径（prompt 排在 orders 之前，字符串走 r.text()）
+    // 2.0.0 B3：预警通知（离线预览只读，不做真实外发 / 不落盘）
+    else if(u.indexOf('api/notify/state')>=0) d=notifyState;
+    else if(u.indexOf('api/notify/channels')>=0)
+      d={ok:true,data:notifyState.channels,payload_version:notifyState.payload_version};
+    else if(u.indexOf('api/notify/history')>=0) d={ok:true,data:notifyState.history};
+    else if(u.indexOf('api/notify/config')>=0)
+      d={ok:true,changed:['enabled','channels'],msg:'（离线预览）配置未真正保存'};
+    else if(u.indexOf('api/notify/test')>=0)
+      d={ok:true,channel:'webhook',msg:'（离线预览）模拟发送成功，未真实外发'};
+    else if(u.indexOf('api/notify/dispatch')>=0)
+      d={ok:true,data:{alerts:0,results:[]}};
+    // 1.1.30：一句话提示词 + 单独读取路径（prompt 排在 orders 之前，字符串走 r.text()）
     else if(u.indexOf('api/orders/prompt')>=0) d=oneLiner(tabOf(u));
     else if(u.indexOf('api/mh/prompt')>=0) d=oneLiner(tabOf(u));
     else if(u.indexOf('api/mh/state')>=0){
@@ -528,7 +608,7 @@ window.addEventListener('error',function(e){
       api:{state:'GET /api/mh/state?tab=<tab>',show:'GET /api/mh/show?ip=<IP>',
            prompt:'GET /api/mh/prompt?tab=<tab>',path:'GET /api/mh/path',
            write:'POST /api/mh/write（action=prepare / commit / discard）'}}};
-    // 1.1.29：密钥授权浮层离线样本（纯 API 数据，不依赖 DOM 位置）（只给指纹 / 公钥 / 时间 / 设备，不给私钥）
+    // 1.1.30：密钥授权浮层离线样本（纯 API 数据，不依赖 DOM 位置）（只给指纹 / 公钥 / 时间 / 设备，不给私钥）
     else if(u.indexOf('api/keyauth/state')>=0){
       if(!window.__ka) window.__ka=[{id:'mh1-preview0001',
         fingerprint:'SHA256:PREVIEW000000000000000000000000000000000',
@@ -609,10 +689,10 @@ window.addEventListener('error',function(e){
       }
       d={ok:true,data:ordersSnap()};
     }
-    else if(u.indexOf('api/health')>=0) d={ok:true,version:'1.1.29'};
+    else if(u.indexOf('api/health')>=0) d={ok:true,version:'2.0.0'};
     // 1.1.15：脱敏诊断包与区级手工补充
     else if(u.indexOf('api/diag/export')>=0) d=diagText;
-    // 1.1.29：运行时报错上报 / 查询 / 导出（export 必须排在 errors 之前）
+    // 1.1.30：运行时报错上报 / 查询 / 导出（export 必须排在 errors 之前）
     else if(u.indexOf('api/runtime/errors/export')>=0){
       window.__rtExportHits++;
       d=rtExportText;
@@ -626,13 +706,12 @@ window.addEventListener('error',function(e){
         d={ok:true,saved:posted.length,total:rtErrors.length};
       } else d={ok:true,data:rtErrors,total:rtErrors.length};
     }
-    // 1.1.29：站内查询（复用在线多源核验），不依赖第三方反爬页面
+    // 1.1.30：站内查询（复用离线主裁决核验），不依赖第三方反爬页面
     else if(u.indexOf('api/geo/verify')>=0) d={ok:true,cached:false,ip:'220.205.86.196',
       geo:{country:'中国',province:'安徽省',city:'合肥市',district:'蜀山区'},
-      verification:{confidence:'high',online_sources:3,
-        sources:[{source:'ip-api.com',country:'中国',province:'安徽省',city:'合肥市',district:''},
-                 {source:'ip.sb',country:'中国',province:'安徽省',city:'合肥',district:''},
-                 {source:'ipinfo.io',country:'中国',province:'安徽',city:'Hefei',district:''}]}};
+      verification:{confidence:'high',online_sources:1,
+        sources:[{source:'ip2region(本地)',role:'主裁决',country:'中国',province:'安徽省',city:'合肥市',district:''},
+                 {source:'ip.sb',role:'参考',country:'中国',province:'安徽省',city:'合肥',district:''}]}};
     else if(u.indexOf('api/geo/district')>=0){
       var nd='';
       try{ nd=String((JSON.parse((opt&&opt.body)||'{}').district)||'').trim().slice(0,40); }
@@ -686,7 +765,7 @@ def main():
         with open(os.path.join(UI, name), "r", encoding="utf-8") as f:
             return f.read()
     html = rd("index.html")
-    # 1.1.29：单文件预览页把投喂二维码内联成 data URI，否则 file:// 下
+    # 1.1.30：单文件预览页把投喂二维码内联成 data URI，否则 file:// 下
     # images/sponsor.png 相对路径失效，关于弹窗截图会显示破图占位。
     sponsor = os.path.join(UI, "images", "sponsor.png")
     if os.path.isfile(sponsor):
@@ -694,7 +773,8 @@ def main():
             b64 = base64.b64encode(f.read()).decode("ascii")
         html = html.replace("images/sponsor.png", "data:image/png;base64," + b64)
     html = html.replace("/*__CSS__*/", rd("style.css"))
-    html = html.replace("<script>/*__JS__*/</script>", MOCK + "<script>" + rd("app.js") + "</script>")
+    mock = MOCK.replace("/*__NOTIFY_MOCK__*/", NOTIFY_MOCK_JS)
+    html = html.replace("<script>/*__JS__*/</script>", mock + "<script>" + rd("app.js") + "</script>")
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     with open(OUT, "w", encoding="utf-8", newline="\n") as f:
         f.write(html)

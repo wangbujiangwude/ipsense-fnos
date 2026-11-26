@@ -296,7 +296,7 @@ footer{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:
 .kv b{color:var(--dim);font-weight:500}
 .kv span{color:var(--text);word-break:break-all}
 .detail-ip{font-family:ui-monospace,Menlo,monospace;font-size:20px;color:var(--text);margin:0 0 4px}
-/* 归属核验 · 多源交叉（1.0.8） */
+/* 归属核验 · 离线主裁决（1.0.8 / 1.1.30） */
 .verify-box{background:var(--panel-2);border:1px solid var(--line);border-left:3px solid var(--blue);
   border-radius:10px;padding:12px 13px;margin-bottom:4px}
 .verify-box .kv{grid-template-columns:96px 1fr;padding:5px 0}
@@ -821,3 +821,187 @@ html::-webkit-scrollbar{width:0;height:0;display:none}
   .keyauth-pop{top:58px;right:10px;width:calc(100% - 20px)}
   .orders-head-actions{gap:10px}
 }
+
+/* ---------- 2.0.0 B2：主界面平级 tab ----------
+   四个 view 用 grid 叠在同一 cell，全部保持真实宽高：地图 SDK 初始化要求
+   容器尺寸 > 0，display:none 会白屏（1.1.21 三图合一踩过坑）。非 active
+   只切 opacity / visibility / pointer-events，不隐藏、不重建地图实例。 */
+.main-tabs{display:flex;align-items:center;gap:6px;margin-bottom:16px;
+  border-bottom:1px solid var(--line-soft);padding-bottom:10px;
+  overflow-x:auto;-webkit-overflow-scrolling:touch}
+.main-tabs::-webkit-scrollbar{display:none}
+.main-tab{flex:none;display:inline-flex;align-items:center;gap:8px;
+  border:1px solid transparent;background:transparent;color:var(--muted);
+  padding:8px 15px;border-radius:10px;font-size:13px;font-weight:560;
+  white-space:nowrap;transition:all .18s var(--ease)}
+.main-tab:hover{color:var(--text);background:var(--panel)}
+.main-tab.on{color:var(--text);background:var(--panel-2);
+  border-color:var(--line);box-shadow:inset 0 -2px 0 var(--blue)}
+.main-tab .tab-no{font-family:Consolas,Monaco,monospace;font-size:11px;
+  color:var(--dim);letter-spacing:.5px}
+.main-tab.on .tab-no{color:var(--blue-l)}
+.main-tabs-spacer{flex:1;min-width:8px}
+.layout-switch{flex:none;border:1px solid var(--line);background:var(--panel);
+  color:var(--muted);padding:7px 12px;border-radius:9999px;font-size:11.5px;
+  white-space:nowrap;transition:all .18s var(--ease)}
+.layout-switch:hover{color:var(--text);border-color:#33507d}
+.main-tabs.scroll .main-tab{display:none}
+
+.views{display:grid;align-items:start}
+.view{grid-area:1/1;min-width:0;
+  opacity:0;visibility:hidden;pointer-events:none;
+  transition:opacity .22s var(--ease),visibility 0s linear .22s}
+.view.active{opacity:1;visibility:visible;pointer-events:auto;z-index:1;
+  transition:opacity .22s var(--ease),visibility 0s}
+/* 布局切换：退回单页长滚动，所有 view 依次铺开 */
+.views.layout-scroll{display:block}
+.views.layout-scroll .view{opacity:1!important;visibility:visible!important;
+  pointer-events:auto!important;transition:none}
+.views.layout-scroll .view.active{z-index:auto}
+
+.tools-card{padding:20px 22px}
+.tools-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
+  gap:12px;margin-top:6px}
+.tool-tile{text-align:left;border:1px solid var(--line);background:var(--panel-2);
+  border-radius:var(--radius-s);padding:16px 18px;display:flex;flex-direction:column;gap:7px;
+  transition:transform .18s var(--ease),background .18s var(--ease),border-color .18s var(--ease)}
+.tool-tile:hover{background:var(--panel-3);border-color:#33507d;transform:translateY(-2px)}
+.tool-tile strong{font-size:13.5px;font-weight:620}
+.tool-tile span{font-size:11.5px;color:var(--dim);line-height:1.6}
+
+/* ---------- 2.0.0 B2：设置改居中卡片弹窗 + 内部平级 tab ----------
+   detailDrawer（IP 画像）仍是右侧抽屉，只有 settingsDrawer 改卡片。 */
+#settingsDrawer{position:fixed;top:50%;left:50%;right:auto;bottom:auto;
+  width:min(880px,94vw);height:min(86vh,900px);
+  transform:translate(-50%,-46%) scale(.97);opacity:0;pointer-events:none;
+  border:1px solid var(--line);border-radius:var(--radius);
+  background:var(--panel);box-shadow:0 24px 70px rgba(0,0,0,.62);
+  transition:transform .28s var(--ease),opacity .22s var(--ease)}
+#settingsDrawer.on{transform:translate(-50%,-50%) scale(1);opacity:1;pointer-events:auto}
+#settingsDrawer .drawer-head{padding:16px 22px}
+/* 2.0.0 返工：保存配置固定在抽屉右上角，任何分组 tab 下都可见 */
+.drawer-head-actions{display:flex;align-items:center;gap:10px}
+.btn-save-top{padding:7px 16px;font-size:12.5px;font-weight:600;white-space:nowrap}
+.btn-save-top.dirty{box-shadow:0 0 0 2px rgba(93,184,255,.35)}
+.save-badge{font-size:11px;color:#ffcf8b;background:rgba(190,120,30,.16);
+  border:1px solid rgba(220,160,60,.35);border-radius:999px;padding:3px 9px;white-space:nowrap}
+.save-badge[hidden]{display:none}
+.notify-save-tip{font-size:11.5px;color:var(--dim);line-height:1.6;
+  background:var(--panel-2);border:1px solid var(--line);border-radius:10px;
+  padding:9px 12px;margin:8px 0 0}
+.notify-save-tip strong{color:var(--blue-l)}
+@media(max-width:560px){.btn-save-top{padding:6px 11px;font-size:11.5px}.save-badge{display:none}}
+#settingsDrawer .drawer-body{padding:18px 22px 34px}
+.settings-tabs{display:flex;gap:4px;flex-wrap:wrap;margin:0 0 16px;
+  padding-bottom:12px;border-bottom:1px solid var(--line-soft)}
+.settings-tab{border:1px solid transparent;background:transparent;color:var(--muted);
+  padding:7px 14px;border-radius:9px;font-size:12.5px;white-space:nowrap;
+  transition:all .18s var(--ease)}
+.settings-tab:hover{color:var(--text);background:var(--panel-2)}
+.settings-tab.on{color:var(--text);background:var(--panel-3);border-color:var(--line)}
+.settings-pane{display:none}
+.settings-pane.on{display:block;animation:paneIn .2s var(--ease)}
+@keyframes paneIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){.settings-pane.on{animation:none}}
+
+/* ---------- 2.0.0 B3：预警通知设置（纯外发） ---------- */
+.redline-note{background:rgba(255,77,109,.08);border:1px solid rgba(255,77,109,.35);
+  border-radius:10px;padding:10px 14px;font-size:12px;line-height:1.7;margin:0 0 16px;
+  color:var(--text)}
+.notify-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:10px;margin-top:10px}
+.notify-f{margin-bottom:10px}
+.notify-lab{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}
+.notify-secret{display:block;font-size:10.5px;color:var(--amber);
+  margin-top:2px;line-height:1.5}
+.notify-f input:not([type=checkbox]),.notify-f select,.notify-f textarea{
+  width:100%;background:var(--panel-2);border:1px solid var(--line);
+  border-radius:8px;padding:8px 10px;font-size:12.5px;color:var(--text);outline:none}
+.notify-f textarea{resize:vertical;
+  font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px}
+.notify-f input:focus,.notify-f select:focus,.notify-f textarea:focus{
+  border-color:var(--blue)}
+#notifyAddSel{flex:1;min-width:180px;background:var(--panel-2);
+  border:1px solid var(--line);border-radius:8px;padding:8px 10px;
+  font-size:12.5px;color:var(--text)}
+.notify-sw{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;
+  color:var(--text);margin:4px 0 10px;cursor:pointer}
+.notify-sw input{width:15px;height:15px;accent-color:var(--blue)}
+.notify-ch{background:var(--panel-2);border:1px solid var(--line);
+  border-radius:12px;padding:14px;margin-bottom:12px}
+.notify-ch-head{display:flex;align-items:center;gap:10px;
+  margin-bottom:12px;flex-wrap:wrap}
+.notify-ch-head b{font-size:13px}
+.notify-ch-head .btn{padding:5px 10px;font-size:11.5px}
+.notify-badge{font-size:10.5px;color:var(--green);
+  border:1px solid rgba(52,211,153,.4);background:rgba(52,211,153,.08);
+  border-radius:999px;padding:2px 9px}
+.notify-hist{width:100%;border-collapse:collapse;font-size:11.5px}
+.notify-hist th,.notify-hist td{padding:7px 9px;
+  border-bottom:1px solid var(--line-soft);text-align:left;
+  color:var(--muted);vertical-align:top}
+.notify-hist th{color:var(--dim);font-weight:600}
+.notify-hist td.diag-ok{color:var(--green)}
+.notify-hist td.diag-bad{color:var(--red)}
+@media(max-width:820px){.notify-grid{grid-template-columns:1fr}}
+
+/* ---------- 2.0.0 B2：移动端适配 ---------- */
+@media(max-width:820px){
+  .topbar{height:auto;min-height:64px;flex-wrap:wrap;padding:10px 0;gap:10px}
+  .brand{min-width:0}
+  .top-actions{gap:6px}
+  .segmented button{padding:5px 9px;font-size:11px}
+  .main-tab{padding:7px 11px;font-size:12px}
+  .layout-switch{font-size:11px;padding:6px 9px}
+  .metrics{grid-template-columns:repeat(2,1fr)}
+  .row-2,.rank-cols{grid-template-columns:1fr}
+  .web-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  #settingsDrawer{width:96vw;height:92vh;border-radius:14px}
+}
+@media(max-width:560px){
+  #app{padding:0 12px 20px}
+  .brand-text p{display:none}
+  .metrics{grid-template-columns:repeat(2,1fr);gap:10px}
+  .web-grid,.tools-grid{grid-template-columns:1fr}
+  .main-tabs{gap:2px}
+  .main-tab{padding:6px 9px;font-size:11.5px}
+  .main-tab .tab-no{display:none}
+  #settingsDrawer{width:100vw;height:100vh;top:0;left:0;border-radius:0;
+    transform:none}
+  #settingsDrawer.on{transform:none}
+  .settings-tab{padding:6px 10px;font-size:11.5px}
+  .field input[type=text],.field input[type=number],.field select{width:150px}
+}
+
+/* ---------- 2.0.0 B4 · 地图动效覆盖层 / 启动加载遮罩 ---------- */
+/* 透明 canvas 叠在三个地图容器之上，只画应用自有数据（流动光点 / 雷达环 /
+   5 秒新坐标点），不绘制任何国界、海岸线或行政区划边界。
+   z-index 高于 SDK 暗色蒙版(1100)与说明文字(1101/1102)，但 pointer-events:none
+   保证不拦截圆点点击；SDK 的高层级元素仍被各图层 :after 锁在图层内部。 */
+.fx-layer{position:absolute;inset:0;width:100%;height:100%;display:block;
+  pointer-events:none;z-index:1103;background:transparent}
+.map-loading{position:absolute;inset:0;z-index:1104;display:flex;
+  flex-direction:column;align-items:center;justify-content:center;gap:16px;
+  background:radial-gradient(600px 320px at 50% 45%,rgba(16,42,74,.92),rgba(7,17,34,.96));
+  pointer-events:none;transition:opacity .55s var(--ease),visibility .55s}
+.map-loading.off{opacity:0;visibility:hidden}
+.map-loading:before{content:"";position:absolute;left:50%;top:50%;
+  width:92px;height:92px;margin:-46px 0 0 -46px;border-radius:50%;
+  border:1px solid rgba(125,211,252,.25);animation:mlPulse 2.4s ease-out infinite}
+.ml-ring{width:92px;height:92px;border-radius:50%;box-sizing:border-box;
+  border:2px solid rgba(93,184,255,.18);border-top-color:#5db8ff;
+  border-right-color:rgba(93,184,255,.62);animation:mlSpin 1.1s linear infinite;
+  box-shadow:0 0 26px rgba(93,184,255,.12)}
+.ml-txt{font-size:12px;letter-spacing:.12em;color:#9fc6ea}
+@keyframes mlSpin{to{transform:rotate(360deg)}}
+@keyframes mlPulse{0%{transform:scale(.6);opacity:.72}100%{transform:scale(2.15);opacity:0}}
+@media(prefers-reduced-motion:reduce){.ml-ring,.map-loading:before{animation:none}}
+@media(max-width:560px){.ml-ring,.map-loading:before{width:68px;height:68px;margin:-34px 0 0 -34px}}
+
+/* ---------- 2.0.0 B5：卫星底图合规说明 ---------- */
+.compliance-note{background:rgba(59,130,246,.07);border:1px solid rgba(59,130,246,.32);
+  border-radius:10px;padding:10px 12px;margin:8px 0 0;font-size:11.5px;
+  line-height:1.75;color:var(--muted)}
+.compliance-note code{font-family:Consolas,Monaco,monospace;font-size:11px;
+  color:var(--blue-l)}
+@media(max-width:560px){.compliance-note{font-size:11px}}

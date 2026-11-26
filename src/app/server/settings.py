@@ -44,6 +44,8 @@ DEFAULTS = {
     "web_port_infer_referer": True,   # 同站 Referer 带端口时低置信度推断
     "web_scheme_by_port": True,       # 有显式目标端口时按已知端口补 scheme
     "ignore_ips": ["127.0.0.1", "::1"],
+    # 1.1.30：过滤软件自身 /app/ipsense/ 页面与 API 轮询，避免污染统计
+    "filter_self_web": True,
     "keep_days": 30,
     # 地图（1.1.8：四家合规预设 + 自定义接口，KEY 按服务商分别保存）
     # 合规：这里只有占位符，绝不内置任何有效 KEY；用户自申请后写入本机配置。
@@ -65,14 +67,29 @@ DEFAULTS = {
     "map_arc_limit": 16,
     "map_arc_bend": 0.12,
     "map_arc_animate": True,
+    # 2.0.0 B4：地图动效覆盖层（纯前端绘制，不刷新底图、不改数据）
+    "map_fx": True,
+    "map_fx_scan": True,
+    "map_fx_reveal": True,
+    # 2.0.0 返工：默认改用卫星影像（腾讯 GL JS 官方 setBaseMap，features:['base']）。
+    # 合规：应用不内置 KEY、不篡改底图、不自绘边界；审图号 / 版权由官方底图承载。
+    # 卫星影像不叠加国界 / 省界 / 行政区划标注，满足「没有国境线」的诉求。
+    "map_base": "satellite",
+    # 2.0.0 B5：lucky 日志解析器预留开关（D 路径）
+    # 真机取证（docs/lucky_probe_result.md）确认 lucky 无落盘文本日志，
+    # 因此默认全关、暂不接 LogTailer；等后台日志中心原始样例到齐再校准正则。
+    "source_lucky_web": False,
+    "source_lucky_sys": False,
+    "lucky_web_log": "",
+    "lucky_sys_log": "",
     "chart_range": "24h",
-    # 归属信息源：多源交叉校验（1.0.8）
+    # 归属信息源：离线库主裁决 + ip.sb 参考（1.0.8 引入，1.1.30 改口径）
     "geo_verify_enabled": True,
     "geo_verify_days": 30,
     "geo_verify_batch": 60,
     # 1.1.15：新公网 IP 首次出现即进入后台核验（避免离线库脏值长期滞留）
     "geo_verify_auto": True,
-    # 区级补充探测：只用独立源补 district，不参与 4 票裁决
+    # 区级补充探测：只用独立源补 district，不参与归属裁决
     "geo_district_enabled": True,
     # 1.1.16：用户自定义区级接口（默认关闭）。tool.hiofd.com 的查询接口带
     # 反爬签名、不是公开 API，不内置自动调用；这里留给用户自己的合法接口。
@@ -93,7 +110,9 @@ BOOL_KEYS = ("source_local_auth", "source_local_web", "source_router_syslog",
              "source_auth_rotated",
              "lan_separate", "geo_verify_enabled", "geo_verify_auto",
              "geo_district_enabled", "geo_district_api_enabled",
-             "map_arc_animate", "summary_enabled",
+             "map_arc_animate", "map_fx", "map_fx_scan", "map_fx_reveal",
+             "source_lucky_web", "source_lucky_sys",
+             "summary_enabled", "filter_self_web",
              "web_port_infer_referer", "web_scheme_by_port")
 INT_KEYS = ("syslog_port", "web_port", "ssh_port", "keep_days", "map_refresh",
             "map_heavy_refresh", "map_arc_limit", "auth_rotated_max",
@@ -102,7 +121,8 @@ INT_KEYS = ("syslog_port", "web_port", "ssh_port", "keep_days", "map_refresh",
 FLOAT_KEYS = ("home_lat", "home_lng", "home_locate_at", "map_arc_bend")
 STR_KEYS = ("inbox_dir", "auth_log", "web_log", "kern_log", "knock_marker",
             "knock_app_dir",
-            "map_key", "map_provider", "home_label", "chart_range",
+            "map_key", "map_provider", "map_base", "lucky_web_log", "lucky_sys_log",
+            "home_label", "chart_range",
             "web_scheme_override", "web_port_map", "home_ip", "home_geo",
             "home_proxy_ip", "home_source", "summary_dir", "summary_range")
 DICT_KEYS = ("map_keys",)
@@ -175,6 +195,11 @@ class Settings(object):
                 elif k == "map_provider":
                     v = str(v)[:32]
                     if v not in valid_ids:
+                        continue
+                elif k == "map_base":
+                    # 2.0.0 B5：只放行两个合规取值，杜绝任意字符串 / 境外源标识
+                    v = str(v)[:16]
+                    if v not in ("vector", "satellite"):
                         continue
                 elif k == "summary_dir":
                     # 1.1.9：只接受合规的 NAS 数据目录；越权路径静默忽略，

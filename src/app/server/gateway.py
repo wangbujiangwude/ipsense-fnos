@@ -18,7 +18,7 @@ import urllib.parse
 import traceback
 
 APP_NAME = "ipsense"
-VERSION = "1.1.29"
+VERSION = "2.0.0"
 PREFIX = "/app/" + APP_NAME
 APP_DEST = os.environ.get("TRIM_APPDEST", "/var/apps/%s/target" % APP_NAME)
 VAR_DIR = os.environ.get("TRIM_PKGVAR") or "/vol1/@appdata/%s" % APP_NAME
@@ -46,6 +46,9 @@ from collector import Collector                              # noqa: E402
 from locate import current as locate_current, run as locate_run   # noqa: E402
 from diag import build_bundle                                       # noqa: E402
 from rtlog import RuntimeLog, build_export as build_runtime_export  # noqa: E402
+# 2.0.0 B3：预警通知统一适配层 + 检测引擎（严格纯外发，独立存储）
+from notify import public_channels, PAYLOAD_VERSION                  # noqa: E402
+from notifier import Notifier                                         # noqa: E402
 from summary import (                                             # noqa: E402
     SummaryWriter, build_summary, write_summary, validate_dir,
     path_allowed, LATEST_NAME,
@@ -88,6 +91,9 @@ class App(object):
         # 1.1.27：密钥授权状态（用户可知 / 随时可撤销）。只管理带标记的
         # authorized_keys 行与 keys/ 下自有密钥副本，不碰提交单、不碰防火墙。
         self.keyauth = KeyAuth(VAR_DIR, log)
+        # 2.0.0 B3：预警通知（严格纯外发）。配置与历史独立落 notify.json /
+        # notify_history.json，只发消息，不碰提交单、不调处置通道、不改防火墙。
+        self.notifier = Notifier(VAR_DIR, self.store, log)
         # 1.0.9：升级后订正历史脏值（英文国名 / province=中国 / 坐标与省份脱钩）
         try:
             _norm = self.store.normalize_events()
@@ -161,6 +167,14 @@ class App(object):
     def boot_async(self):
         """1.1.1：socket 先就绪，采集器 / 回填 / 预热全部后台化。"""
         def run():
+            # 1.1.30：先清历史自身访问噪声，再启动采集与预热，
+            # 否则 warmup 会把带噪的聚合结果缓存 60 秒。
+            try:
+                n = self.store.purge_self_web()
+                if n:
+                    log("purge_self_web: removed %d rows" % n)
+            except Exception:
+                log("purge_self_web error: %s" % traceback.format_exc())
             try:
                 self.start_collector(backfill=True)
             except Exception:
@@ -169,6 +183,12 @@ class App(object):
                 self.warmup()
             except Exception:
                 log("warmup error: %s" % traceback.format_exc())
+            # 2.0.0 B3：预警线程放到最后启，且内部先等一个 interval 再首次检测，
+            # 不占启动关键路径、也不拿启动瞬间的历史数据刷告警。
+            try:
+                self.notifier.start()
+            except Exception:
+                log("notifier start error: %s" % traceback.format_exc())
         threading.Thread(target=run, name="ipsense-boot", daemon=True).start()
 
     def start_collector(self, backfill=True):
@@ -231,6 +251,10 @@ class App(object):
             pass
         try:
             self.summary.stop()
+        except Exception:
+            pass
+        try:
+            self.notifier.stop()
         except Exception:
             pass
         self.store.close()
@@ -523,6 +547,38 @@ def api(app, method, path, query, body):
         app.geo.invalidate(ip)
         return 200, {"ok": True, "ip": ip, "district": d,
                      "events_updated": n}
+    # ---------------- 2.0.0 B3 · 预警通知（严格纯外发） ----------------
+    # 下列接口只读写 notify.json / notify_history.json：只发消息，
+    # 不读提交单、不调处置通道、不改防火墙、不自动处置。
+    if path == "/api/notify/state":
+        return 200, app.notifier.state()
+    if path == "/api/notify/channels":
+        return 200, {"ok": True, "data": public_channels(),
+                     "payload_version": PAYLOAD_VERSION}
+    if path == "/api/notify/history":
+        return 200, {"ok": True, "data": app.notifier.history_list(
+            min(200, int(p.get("limit", 50) or 50)))}
+    if path == "/api/notify/config" and method == "POST":
+        try:
+            payload = json.loads(body.decode("utf-8", "replace") if isinstance(body, bytes)
+                                 else (body or "{}"))
+            if not isinstance(payload, dict):
+                raise ValueError("配置必须是 JSON 对象")
+            changed = app.notifier.cfg.update(payload)
+            return 200, {"ok": True, "changed": changed,
+                         "msg": "预警配置已保存；凭证未改动（掩码）则保留原值"}
+        except Exception as e:
+            return 400, {"ok": False, "msg": str(e)}
+    if path == "/api/notify/test" and method == "POST":
+        try:
+            payload = json.loads(body.decode("utf-8", "replace") if isinstance(body, bytes)
+                                 else (body or "{}"))
+            return 200, app.notifier.test(payload)
+        except Exception as e:
+            return 400, {"ok": False, "msg": str(e)}
+    if path == "/api/notify/dispatch" and method == "POST":
+        # 手动触发一次检测 + 发送；只发消息，不触发任何处置。
+        return 200, {"ok": True, "data": app.notifier.dispatch_now()}
     if path == "/api/summary/download":
         rng = p.get("rng") or app.settings.get("summary_range", "24h")
         return 200, build_summary(app, rng).encode("utf-8"), "text/markdown; charset=utf-8"

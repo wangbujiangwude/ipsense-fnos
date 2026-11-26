@@ -41,19 +41,27 @@
   </header>
 
   <main>
+    <nav class="main-tabs" id="mainTabs" role="tablist" aria-label="主界面导航">
+      <button type="button" class="main-tab on" data-view="overview" role="tab" aria-selected="true"><span class="tab-no">01</span>态势总览</button>
+      <button type="button" class="main-tab" data-view="analysis" role="tab" aria-selected="false"><span class="tab-no">02</span>访问分析</button>
+      <button type="button" class="main-tab" data-view="records" role="tab" aria-selected="false"><span class="tab-no">03</span>来源记录</button>
+      <button type="button" class="main-tab" data-view="tools" role="tab" aria-selected="false"><span class="tab-no">04</span>工具配置</button>
+      <span class="main-tabs-spacer"></span>
+      <button type="button" class="layout-switch" id="btnLayout" title="在平级 Tab 与单页滚动之间切换">布局：Tab 分布</button>
+    </nav>
+    <div class="views" id="views">
+      <div class="view active" data-view="overview" id="viewOverview">
     <section class="metrics" id="metrics">
       <div class="metric"><span class="m-label">访问总量</span><strong id="mTotal">—</strong><span class="m-sub" id="mRate">每分钟 — 次</span></div>
       <div class="metric"><span class="m-label">境内来源</span><strong id="mCn" class="c-green">—</strong><span class="m-sub" id="mCnSub">占比 —</span></div>
       <div class="metric"><span class="m-label">境外来源</span><strong id="mOs" class="c-red">—</strong><span class="m-sub" id="mOsSub">占比 —</span></div>
       <div class="metric"><span class="m-label">扫描 / 异常</span><strong id="mScan" class="c-amber">—</strong><span class="m-sub" id="mScanSub">活跃 IP — 个</span></div>
     </section>
-
     <div class="banner" id="complianceBanner">
       <span class="dot"></span>
       <span id="bannerText">正在读取数据源状态…</span>
       <button class="link" id="bannerAction">去设置</button>
     </div>
-
     <!-- 1.1.21：三图合一。境外弧线 / 境内弧线 / 全球气泡各自保留原有容器、SDK 实例与
          绘制逻辑，统一叠进一张卡片的 .map-stage；右上角 segmented 随时切换模式。
          三个图层始终有真实宽高（SDK 初始化要求容器尺寸 > 0，display:none 会白屏），
@@ -87,6 +95,7 @@
         <div class="map-wrap map-layer active" id="worldWrap">
           <div id="worldMap" class="tmap"></div>
           <canvas id="worldCanvas" class="fallback"></canvas>
+          <canvas id="worldFx" class="fx-layer" aria-hidden="true"></canvas>
           <div class="map-note" id="worldNote"></div>
           <div class="map-stat" id="worldStat">—</div>
           <div class="heat-legend" id="worldHeat"></div>
@@ -94,6 +103,7 @@
         <div class="map-wrap map-layer" id="cnWrap">
           <div id="cnMap" class="tmap"></div>
           <canvas id="cnCanvas" class="fallback"></canvas>
+          <canvas id="cnFx" class="fx-layer" aria-hidden="true"></canvas>
           <div class="map-note" id="cnNote"></div>
           <div class="map-stat" id="cnStat">—</div>
           <div class="heat-legend" id="cnHeat"></div>
@@ -101,13 +111,41 @@
         <div class="geo-map-wrap map-layer" id="geoWrap">
           <div id="geoMap" class="tmap"></div>
           <canvas id="geoCanvas" class="fallback"></canvas>
+          <canvas id="geoFx" class="fx-layer" aria-hidden="true"></canvas>
           <div class="geo-legend" id="geoLegend"></div>
           <div class="map-note" id="geoNote">示意坐标分布 · 不绘制国界与省界，边界以官方地图为准</div>
           <div class="map-stat" id="geoStat">—</div>
         </div>
+        <!-- 2.0.0 B4：首帧加载遮罩，数据 / 底图就绪后由 hideMapLoading() 淡出 -->
+        <div class="map-loading" id="mapLoading" aria-hidden="true">
+          <div class="ml-ring"></div>
+          <div class="ml-txt">正在汇聚访问数据 ···</div>
+        </div>
       </div>
     </section>
-
+    <div class="row-2">
+      <section class="card">
+        <div class="card-head"><div><h2>实时访问事件</h2><p>最新来源与判定，自动滚动</p></div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <select id="liveScope" aria-label="监控范围">
+              <option value="">全部范围</option><option value="cn">境内</option>
+              <option value="overseas">境外</option><option value="private">内网</option>
+              <option value="lan">局域网设备</option></select>
+            <span class="tag tag-blue" id="liveTag">实时</span></div></div>
+        <div class="live-list" id="liveList"><div class="empty">等待数据…</div></div>
+      </section>
+      <section class="card">
+        <div class="card-head"><div><h2>访问频率与趋势</h2><p id="trendSub">按时间桶聚合</p></div>
+          <div class="legend-btns" id="trendLegend">
+            <button data-k="all" class="on">总量</button><button data-k="cn">境内</button>
+            <button data-k="overseas">境外</button><button data-k="scan">扫描</button>
+          </div></div>
+        <div class="chart-wrap"><svg id="trendSvg" viewBox="0 0 720 240" preserveAspectRatio="none"></svg>
+          <div id="chartTip" class="chart-tip"></div></div>
+      </section>
+    </div>
+      </div>
+      <div class="view" data-view="analysis" id="viewAnalysis">
     <!-- 1.1.2：图4 双榜界面 + 图3 统计 / 下钻功能，合并到地图正下方。
          全页只保留这一处排名，消除「地域分布右侧 + 境内榜 + 境外榜」三份重复数据。 -->
     <section class="card visitrank" id="rankCard">
@@ -131,7 +169,6 @@
       </div>
       <p class="rank-hint" id="rankTip"></p>
     </section>
-
     <!-- 1.1.0：协议构成 + 来路 / 受访页 / 入口页 / 终端设备，全部来自同一份 combined 日志
          1.1.3：点卡片无缝放大；点卡片内任一条目直接放大并下钻到该条目的来源 IP 明细 -->
     <div class="web-grid" id="webCards">
@@ -162,29 +199,8 @@
         <div class="mini-list" id="deviceList"><div class="empty">暂无数据</div></div>
       </section>
     </div>
-
-    <div class="row-2">
-      <section class="card">
-        <div class="card-head"><div><h2>实时访问事件</h2><p>最新来源与判定，自动滚动</p></div>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <select id="liveScope" aria-label="监控范围">
-              <option value="">全部范围</option><option value="cn">境内</option>
-              <option value="overseas">境外</option><option value="private">内网</option>
-              <option value="lan">局域网设备</option></select>
-            <span class="tag tag-blue" id="liveTag">实时</span></div></div>
-        <div class="live-list" id="liveList"><div class="empty">等待数据…</div></div>
-      </section>
-      <section class="card">
-        <div class="card-head"><div><h2>访问频率与趋势</h2><p id="trendSub">按时间桶聚合</p></div>
-          <div class="legend-btns" id="trendLegend">
-            <button data-k="all" class="on">总量</button><button data-k="cn">境内</button>
-            <button data-k="overseas">境外</button><button data-k="scan">扫描</button>
-          </div></div>
-        <div class="chart-wrap"><svg id="trendSvg" viewBox="0 0 720 240" preserveAspectRatio="none"></svg>
-          <div id="chartTip" class="chart-tip"></div></div>
-      </section>
-    </div>
-
+      </div>
+      <div class="view" data-view="records" id="viewRecords">
     <section class="card records">
       <div class="card-head">
         <div><h2>IP 来源记录</h2><p>同秒同 IP 的多个请求合并为一行，只记录动作；路径明细点开画像查看</p></div>
@@ -192,7 +208,7 @@
           <select id="fScope"><option value="">全部范围</option><option value="cn">境内</option><option value="overseas">境外</option><option value="private">内网</option><option value="lan">局域网设备</option></select>
           <select id="fVerdict"><option value="">全部判定</option><option value="normal">正常访问</option><option value="scan">扫描探测</option><option value="attack">认证攻击</option><option value="knock">端口敲门</option></select>
           <select id="fProto"><option value="">全部协议</option><option value="https">HTTPS</option><option value="http">HTTP</option><option value="web">Web 未识别</option><option value="ssh">SSH</option><option value="tcp">TCP</option><option value="udp">UDP</option><option value="icmp">ICMP</option></select>
-          <select id="fSource"><option value="">全部来源</option><option value="local_auth">本机 SSH</option><option value="local_web">本机 Web</option><option value="fnos_audit">fnOS 审计</option><option value="router_syslog">路由器 syslog</option><option value="router_file">路由器文件</option><option value="knock">端口敲门</option><option value="knock_app">敲门网关</option></select>
+          <select id="fSource"><option value="">全部来源</option><option value="local_auth">本机 SSH</option><option value="local_web">本机 Web</option><option value="fnos_audit">fnOS 审计</option><option value="router_syslog">路由器 syslog</option><option value="router_file">路由器文件</option><option value="knock">端口敲门</option><option value="knock_app">敲门网关</option><option value="lucky_web">Lucky 反代</option><option value="lucky_sys">Lucky 系统</option></select>
           <input id="fQuery" type="search" placeholder="搜索 IP / 归属 / 路径">
           <button class="btn ghost" id="btnExport">导出 CSV</button>
         </div>
@@ -205,12 +221,28 @@
       </div>
       <div class="pager"><span id="recTotal">共 0 条</span><div><button class="btn ghost" id="btnPrev">上一页</button><span id="recPage">1 / 1</span><button class="btn ghost" id="btnNext">下一页</button></div></div>
     </section>
+      </div>
+      <div class="view" data-view="tools" id="viewTools">
+        <section class="card tools-card">
+          <div class="card-head"><div><h2>工具配置</h2><p>常用维护入口 · 设置以卡片形式弹出</p></div>
+            <span class="tag tag-blue">2.0.0</span></div>
+          <div class="tools-grid">
+            <button class="tool-tile" type="button" data-act="settings"><strong>应用设置</strong><span>数据来源 / 归属核验 / 地图与位置 / 采集策略 / 诊断反馈</span></button>
+            <button class="tool-tile" type="button" data-act="orders"><strong>提交单</strong><span>查看已标注 IP 的四区看板，复制读取提示词给外部 agent</span></button>
+            <button class="tool-tile" type="button" data-act="refresh"><strong>立即刷新</strong><span>重新拉取实时事件、地图与统计</span></button>
+            <button class="tool-tile" type="button" data-act="export"><strong>导出 CSV</strong><span>按当前筛选条件导出 IP 来源记录</span></button>
+            <button class="tool-tile" type="button" data-act="about"><strong>关于</strong><span>版本信息、数据源说明与投喂入口</span></button>
+          </div>
+          <p class="hint" style="margin:14px 0 0">主包只观测、不封禁、不改防火墙、不自动处置；处置交给外部 agent 通过 mh / fw 完成。</p>
+        </section>
+      </div>
+    </div>
   </main>
 
   <footer>
     <span id="footMap">IP 动态感知 · 离线归属库 ip2region · 底图服务：—</span>
-    <span id="footInfo">1.1.29 起 skill 新增 mh setup 一步步引导，自动生成密钥对并配好 SSH；1.1.28 起密钥授权改为提交单右上角入口、点开才显示浮层；1.1.27 起新增密钥授权（用户可知、随时可撤销），agent 复制提示词后直接按标注执行、仅争议项二次确认，
-        处置走 fw CLI、mh 仍只改提交单状态；· 数据源：本机日志 / fnOS 结构化审计 / SSH 轮转日志 / 路由器日志 / 端口敲门 · 归属：本地离线库 + 3 家在线源交叉校验 · 协议 / 来路 / 受访页 / 入口页来自 Nginx combined 日志 · 1.1.26 起画像标注行只保留输入框，点它弹出写标注窗口完成保存；· 1.1.25 起提交单分「待处理 / 已完成 / 待撤回 / 全部」四区，读取提示词压成一句话加单独读取路径，规矩整合进 skill，AI 通过 mh 读写提交单状态（旧回执自动拒绝）；· 1.1.24 起标注输入框回归单行、点击弹出独立写标注窗口（带常用要求预设），四个弹层淡入淡出；1.1.23 起标注输入区点开放大、点击框外还原，提交单 / 关于 / 投喂入口加入弹出动画；1.1.22 起画像可给 IP 写标注并加入提交单，复制读取提示词交给外部 agent，软件永远不改防火墙设置；1.1.21 起三张地图合并为一张卡片，右上角可切换境外连线 / 境内连线 / 全球分布；1.1.20 起 IP 来源记录同秒同 IP 合并为一行、路径明细点开画像查看；1.1.19 起投喂二维码单独弹出并放大；1.1.18 起筛选范围下次打开保持、目标端口按日志证据多级补录、在线校验自动复制 IP 并支持站内查询；设置最底部可一键导出运行报错与运行日志诊断包，方便交给 AI 定位问题</span>
+    <span id="footInfo">2.0.0 大版本：平级 tab / 设置卡片 / 10 渠道预警（纯外发）/ 地图 FX 与卫星底图 / Lucky 日志预留；1.1.30 起归属判定改为离线库主裁决、ip.sb 仅作参考，并过滤软件自身访问；1.1.29 起 skill 新增 mh setup 一步步引导，自动生成密钥对并配好 SSH；1.1.28 起密钥授权改为提交单右上角入口、点开才显示浮层；1.1.27 起新增密钥授权（用户可知、随时可撤销），agent 复制提示词后直接按标注执行、仅争议项二次确认，
+        处置走 fw CLI、mh 仍只改提交单状态；· 数据源：本机日志 / fnOS 结构化审计 / SSH 轮转日志 / 路由器日志 / 端口敲门 · 归属：离线库主裁决 + ip.sb 参考 · 协议 / 来路 / 受访页 / 入口页来自 Nginx combined 日志 · 1.1.26 起画像标注行只保留输入框，点它弹出写标注窗口完成保存；· 1.1.25 起提交单分「待处理 / 已完成 / 待撤回 / 全部」四区，读取提示词压成一句话加单独读取路径，规矩整合进 skill，AI 通过 mh 读写提交单状态（旧回执自动拒绝）；· 1.1.24 起标注输入框回归单行、点击弹出独立写标注窗口（带常用要求预设），四个弹层淡入淡出；1.1.23 起标注输入区点开放大、点击框外还原，提交单 / 关于 / 投喂入口加入弹出动画；1.1.22 起画像可给 IP 写标注并加入提交单，复制读取提示词交给外部 agent，软件永远不改防火墙设置；1.1.21 起三张地图合并为一张卡片，右上角可切换境外连线 / 境内连线 / 全球分布；1.1.20 起 IP 来源记录同秒同 IP 合并为一行、路径明细点开画像查看；1.1.19 起投喂二维码单独弹出并放大；1.1.18 起筛选范围下次打开保持、目标端口按日志证据多级补录、在线校验自动复制 IP 并支持站内查询；设置最底部可一键导出运行报错与运行日志诊断包，方便交给 AI 定位问题</span>
   </footer>
 </div>
 
@@ -231,7 +263,7 @@
     <div class="zoom-detail" id="zoomDetail"><div class="empty">点击左侧任意条目，查看该条目的详细信息与来源 IP</div></div>
   </div>
 </section>
-<aside class="drawer" id="settingsDrawer"><div class="drawer-head"><h2>设置</h2><button class="icon-btn" data-close>✕</button></div><div class="drawer-body" id="settingsBody"></div></aside>
+<aside class="drawer" id="settingsDrawer"><div class="drawer-head"><h2>设置</h2><div class="drawer-head-actions"><span class="save-badge" id="saveBadge" hidden>未保存</span><button class="btn primary btn-save-top" id="btnSaveCfg" type="button">保存配置</button><button class="icon-btn" data-close>✕</button></div></div><div class="drawer-body" id="settingsBody"></div></aside>
 <aside class="drawer" id="detailDrawer"><div class="drawer-head"><h2 id="detailTitle">IP 来源画像</h2><button class="icon-btn" data-close>✕</button></div><div class="drawer-body" id="detailBody"></div></aside>
 <!-- 1.1.18：关于弹窗。以「关于 Cloudflare 快捷隧道」的排版为模板：
      深色卡片 + 橙色小标题 + 使用说明 / 注意事项 + 底部分隔线与开发者信息。 -->

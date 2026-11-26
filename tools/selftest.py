@@ -63,6 +63,9 @@ for ip, expect_scope, expect_country in (
 print("=== 2. 日志解析 ===")
 app = gateway.App()
 cfg = app.settings.all()
+# 1.1.30：历史自检样本的路径就是 /app/ipsense/（从真机日志复制），
+# 基线用例关闭自身访问过滤；过滤能力由末尾 1.1.30 专项组单独覆盖。
+cfg["filter_self_web"] = False
 c = Collector(app.store, geo, cfg)
 app.collector = c
 now = time.strftime("%d/%b/%Y:%H:%M:%S +0800", time.localtime())
@@ -208,28 +211,33 @@ st_src = open(os.path.join(SERVER, "store.py"), encoding="utf-8").read()
 set_src = open(os.path.join(SERVER, "settings.py"), encoding="utf-8").read()
 man_src = open(os.path.join(ROOT, "src", "manifest"), encoding="utf-8").read()
 
-# 多数派裁决：3 家在线源一致判安徽合肥，本地库误判河北石家庄
+# 1.1.30：离线库主裁决 + ip.sb 参考，在线源不再改写归属
 _vlocal = geo.lookup_uncached("220.205.66.123")
 _vonline = [
-    {"source": "ip-api.com", "country": "中国", "province": "安徽", "city": "合肥",
-     "isp": "联通", "lat": 31.82, "lng": 117.23},
-    {"source": "ip.sb", "country": "中国", "province": "安徽", "city": "合肥",
-     "isp": "China Unicom", "lat": 31.82, "lng": 117.23},
-    {"source": "ipinfo.io", "country": "中国", "province": "安徽", "city": "合肥",
-     "isp": "AS140726", "lat": 31.86, "lng": 117.28},
+    {"source": "ip.sb", "country": "中国", "province": "山东", "city": "济南",
+     "isp": "AS140726", "lat": 36.65, "lng": 117.12},
 ]
 _vgeo, _vf = geosource.vote(_vlocal, _vonline)
-check("多源多数派裁决修正本地库误判", _vgeo["province"] == "安徽省" and _vgeo["scope"] == "cn",
+check("离线库主裁决不被在线参考源改写",
+      _vgeo["province"] == _vlocal["province"] and _vgeo["scope"] == "cn",
       "本地=%s → 裁决=%s" % (_vlocal["province"], _vgeo["province"]))
-check("3 家在线源一致时置信度为高", _vf["confidence"] == "high" and _vf["online_sources"] == 3)
-check("记录源间分歧供前端提示", _vf["disagree"] is True and len(_vf["sources"]) == 4)
-check("裁决采用在线城市级坐标", _vgeo["lat"] == 31.82 and _vgeo["lng"] == 117.23)
+check("参考源与离线库分歧时标记 disagree 并降级 medium",
+      _vf["disagree"] is True and _vf["confidence"] == "medium")
+check("核验明细保留主裁决与参考两行并标注角色",
+      len(_vf["sources"]) == 2 and
+      _vf["sources"][0].get("role") == "主裁决" and
+      _vf["sources"][1].get("role") == "参考" and
+      _vf["primary_source"] == "ip2region(本地)")
 check("国家名归一（ISO / 英文 / 港澳台）",
       geosource.norm_country("MU") == "毛里求斯" and
       geosource.norm_country("HK") == "中国香港" and
       geosource.norm_prov("Anhui") == "安徽")
-check("在线不可用时回退离线库", geosource.vote(_vlocal, [])[1]["confidence"] == "offline")
-check("三家在线源并行查询", "ThreadPoolExecutor(3)" in geo_src)
+check("离线库定论即为 high，不依赖在线源数量",
+      geosource.vote(_vlocal, [])[1]["confidence"] == "high")
+check("只查一家在线参考源", "ThreadPoolExecutor(1)" in geo_src)
+check("两个在线源取数函数已移除",
+      "def fetch_ipapi" not in geo_src and "def fetch_ipinfo" not in geo_src and
+      'SOURCES = ("ip2region(本地)", "ip.sb(参考)")' in geo_src)
 check("GeoResolver 支持缓存钩子", all(hasattr(geo, m) for m in
       ("attach", "lookup_uncached", "invalidate")))
 check("IPv6 不再把 province 写成中国", geo.lookup_uncached("2408:8244::1")["province"] == "")
@@ -239,10 +247,10 @@ check("geo_cache 表与缓存方法齐备", all(hasattr(app.store, m) for m in
       ("get_geo_cache", "set_geo_cache", "geo_cache_count", "geo_cache_stats",
        "apply_geo", "top_public_ips", "lan_stat")) and "CREATE TABLE IF NOT EXISTS geo_cache" in st_src)
 app.store.set_geo_cache("9.9.9.9", _vgeo, _vf, _vlocal)
-check("校验结果可写入并读回缓存", (app.store.get_geo_cache("9.9.9.9") or {}).get("province") == "安徽省")
+check("校验结果可写入并读回缓存", (app.store.get_geo_cache("9.9.9.9") or {}).get("province") == _vlocal["province"])
 check("apply_geo 可回写历史事件", isinstance(app.store.apply_geo("9.9.9.9", _vgeo), int))
 
-_c8 = Collector(app.store, geo, app.settings.all(), lambda m: None)
+_c8 = Collector(app.store, geo, cfg, lambda m: None)
 _tline = ('2026-11-10T09:47:05+08:00 fn-OESP sshd[1]: TRIMEVENT:'
           '{"from":"user","eventId":"SshdLoginAuthFail",'
           '"data":{"IP":"1.2.3.4","user":"root"},"datetime":1794275225}')
@@ -292,15 +300,15 @@ _c8b, _r8b = gateway.api(app, "POST", "/api/geo/refresh", "", b"{}")
 check("POST /api/geo/refresh 入队成功", _c8b == 200 and _r8b.get("ok") is True and "queued" in _r8b)
 _c8c, _r8c = gateway.api(app, "GET", "/api/geo/detail", "ip=9.9.9.9", b"")
 check("GET /api/geo/detail 读回核验明细",
-      _c8c == 200 and (_r8c.get("data") or {}).get("province") == "安徽省")
+      _c8c == 200 and (_r8c.get("data") or {}).get("province") == _vlocal["province"])
 
-check("画像新增多源核验区块", "function verifyBlock" in js and "归属核验 · 多源交叉" in js)
+check("画像新增多源核验区块", "function verifyBlock" in js and "归属核验 · 离线主裁决" in js)
 check("单 IP 画像渲染核验结果", "verifyBlock(ip, r.verification)" in js)
 check("核验按钮与重新渲染绑定",
       "function bindDetailEvents" in js and 'data-act="verify"' in js and
       "api/geo/verify?ip=" in js)
 check("设置页新增数据源分组与状态",
-      "归属信息源 · 多源交叉校验" in html6 and "function renderGeoSources" in js and
+      "归属信息源 · 离线主裁决 + 参考源" in html6 and "function renderGeoSources" in js and
       "btnGeoRefresh" in js)
 check("设置页新开关与字段齐备", all(x in js for x in
       ("sw('geo_verify_enabled'", "fld('geo_verify_days'", "sw('source_fnos_audit'",
@@ -318,25 +326,22 @@ check("英文城市名归一为中文",
       geosource.norm_city("Port Louis") == "路易港" and
       geosource.norm_city("石家庄市") == "石家庄")
 
-# 本地库判广东，三家在线源判安徽且只有一家给坐标：裁决后必须落在合肥
+# 1.1.30：坐标必须与「离线库主裁决」的省份自洽
 _vlocal2 = geo.lookup_uncached("112.28.131.131")
-_vonline2 = [
-    {"source": "ip-api.com", "country": "中国", "province": "安徽", "city": "合肥",
-     "isp": "移动", "lat": 31.82, "lng": 117.23},
-    {"source": "ip.sb", "country": "中国", "province": "安徽", "city": "Hefei",
-     "isp": "China Mobile", "lat": None, "lng": None},
-    {"source": "ipinfo.io", "country": "中国", "province": "安徽", "city": "Hefei",
-     "isp": "AS9808", "lat": None, "lng": None},
-]
-_vgeo2, _vf2b = geosource.vote(_vlocal2, _vonline2)
-check("裁决坐标与省份一致（安徽不再画到广州）",
-      _vgeo2["province"] == "安徽省" and _vgeo2["city"] == "合肥" and
+_ref2a = {"source": "ip.sb", "country": "中国", "province": _vlocal2["province"],
+          "city": "", "isp": "", "lat": 31.82, "lng": 117.23}
+_ref2b = dict(_ref2a, province="山东省", lat=36.65, lng=117.12)
+_vgeo2, _ = geosource.vote(_vlocal2, [_ref2a])
+check("参考源省份与裁决一致时采用其城市级坐标",
+      _vgeo2["province"] == _vlocal2["province"] and
       _vgeo2["lat"] == 31.82 and _vgeo2["lng"] == 117.23,
-      "lat=%s lng=%s city=%s" % (_vgeo2["lat"], _vgeo2["lng"], _vgeo2["city"]))
-_vonline3 = [dict(o, lat=None, lng=None) for o in _vonline2]
-_vgeo3, _ = geosource.vote(_vlocal2, _vonline3)
-check("在线源全无坐标时按省级中心点重算",
-      abs(_vgeo3["lat"] - 31.82) < 1.5 and abs(_vgeo3["lng"] - 117.23) < 1.5)
+      "lat=%s lng=%s" % (_vgeo2["lat"], _vgeo2["lng"]))
+_vgeo3, _ = geosource.vote(_vlocal2, [])
+check("无参考源时按省级中心点重算坐标",
+      _vgeo3["lat"] is not None and _vgeo3["lng"] is not None)
+_vgeo4, _ = geosource.vote(_vlocal2, [_ref2b])
+check("参考源省份冲突时不采用其坐标",
+      not (_vgeo4["lat"] == 36.65 and _vgeo4["lng"] == 117.12))
 check("坐标一致性逻辑已写入 geosource", "PROVINCE_COORDS.get(province)" in geo_src)
 
 check("normalize_events 方法存在", "def normalize_events" in st_src)
@@ -556,7 +561,7 @@ _health14 = gateway.api(app, "GET", "/api/health", "", b"")[1]
 check("health 返回 " + CUR, _health14.get("version") == CUR)
 
 # --- combined 解析与协议置信度 ---
-_c14 = Collector(app.store, geo, app.settings.all(), lambda m: None)
+_c14 = Collector(app.store, geo, cfg, lambda m: None)
 _line14 = ('203.0.113.77 - - [%s] "GET /app/ipsense/?_=123 HTTP/1.1" 200 1234 '
            '"https://example.com/a" "Mozilla/5.0 (Windows NT 10.0) Chrome/120.0"' % now)
 _e14 = _c14.parse_web(_line14)
@@ -2262,7 +2267,7 @@ check("④ 新 IP：设置默认值与界面开关",
 # ⑤ 区级信息
 check("⑤ 区级：离线库第 6 段与 lookup 返回字段",
       "parts[5]" in _gi29 and '"district": district' in _gi29)
-check("⑤ 区级：独立补充源只补 district，不参与 4 票裁决",
+check("⑤ 区级：独立补充源只补 district，不参与归属裁决",
       "DISTRICT_SOURCES" in _gs29 and "def fetch_ip9" in _gs29 and
       "def norm_district" in _gs29 and "def set_district" in _gs29)
 check("⑤ 区级：events / geo_cache 幂等补列与回写",
@@ -2434,11 +2439,12 @@ check("③ 预览 mock 端口按证据链标注来源（1.1.18）",
 check("④ geo_local_fix 表与读写方法齐备",
       "CREATE TABLE IF NOT EXISTS geo_local_fix" in _st30 and
       "def local_fix" in _st30 and "def put_local_fix" in _st30)
-check("④ verify 优先取订正值，不再把重庆带回本地票",
-      "self.store.local_fix(ip)" in _gs30 and
-      "if fix:" in _gs30)
-check("④ 多数派与离线库冲突时固化裁决",
-      "put_local_fix(ip, dict(geo, ip=ip))" in _gs30)
+check("④ 1.1.30 起核验直接读离线库，不再套用历史在线订正值",
+      "self.geo.lookup_uncached(ip)" in _gs30 and
+      "不再读取历史上「在线多数派订正」" in _gs30)
+check("④ 1.1.30 起参考源分歧不再固化为 local_fix",
+      "不再把在线参考源的分歧固化进 geo_local_fix" in _gs30 and
+      "put_local_fix(ip, dict(geo, ip=ip))" not in _gs30)
 check("④ 归属回写后清聚合缓存，去掉假重庆气泡",
       "self.clear_cache()" in _st30)
 check("④ 升级幂等同步历史 local_* 残留",
@@ -2823,7 +2829,9 @@ try:
           _co32.infer_scheme("-", _cfg32, 0) == ("", "none"))
 
     class _Fake32(object):
-        cfg = _cfg32
+        # 基线样本取自真机 /app/ipsense/ 日志，关闭 1.1.30 自身访问过滤；
+        # 过滤能力由第 46 节专项组单独覆盖。
+        cfg = dict(_cfg32, filter_self_web=False)
         _base = staticmethod(_co32.Collector._base)
     _ev32 = _co32.Collector.parse_web(_Fake32(), _line32,
                                       "/usr/trim/nginx/logs/access.log")
@@ -3283,11 +3291,11 @@ check("⑤ 三个原弹层 DOM 与只观测红线完整保留",
       "软件永远不改防火墙设置" in open(os.path.join(ROOT, "README.md"),
                                        encoding="utf-8").read())
 
-check("⑥ 当前版本滚动到 1.1.29，文档与安装表同步（动态读取 CUR）",
-      CUR == "1.1.29" and
-      "### 1.1.29 新增了什么" in open(os.path.join(ROOT, "docs", "使用说明.md"),
+check("⑥ 当前版本滚动到 2.0.0，文档与安装表同步（动态读取 CUR）",
+      CUR == "2.0.0" and
+      "### 1.1.30 新增了什么" in open(os.path.join(ROOT, "docs", "使用说明.md"),
                                       encoding="utf-8").read() and
-      "ipsense_1.1.29_all.fpk" in open(os.path.join(ROOT, "README.md"),
+      "ipsense_2.0.0_all.fpk" in open(os.path.join(ROOT, "README.md"),
                                        encoding="utf-8").read() and
       ("**" + CUR + "（当前版本）**") in
           open(os.path.join(ROOT, "docs", "CHANGELOG.md"), encoding="utf-8").read())
@@ -3392,7 +3400,7 @@ check("⑦ skill 是规矩/大脑：1.1.27 标注即指令 / 直接执行 / 仅�
           "fw ban", "fw status", "/api/mh/write", "mh read", "防呆")) and
       "永远不改防火墙设置" in _k38 and "主包" in _k38)
 
-check("⑧ 旧 CLI 转发到 mh，agent-bridge 文档与预览 mock 同步 1.1.29",
+check("⑧ 旧 CLI 转发到 mh，agent-bridge 文档与预览 mock 同步 2.0.0",
       "deprecated" in _e36 and "runpy.run_path" in _e36 and
       "docs/agent-bridge.md" in open(os.path.join(ROOT, "README.md"),
                                      encoding="utf-8").read() and
@@ -3401,17 +3409,17 @@ check("⑧ 旧 CLI 转发到 mh，agent-bridge 文档与预览 mock 同步 1.1.2
       all(k in _p38 for k in ("api/mh/state", "api/mh/show", "api/mh/path",
           "api/mh/prompt", "api/mh/write", "oneLiner(", "ordersSnap(",
           "status:'pending'", "status:'done'", "status:'revert'",
-          "status:'restored'", "version:'1.1.29'")))
+          "status:'restored'", "version:'2.0.0'")))
 
-check("⑨ 版本滚动到 1.1.29，manifest / 文档 / 安装表 / 预览字样一致",
-      CUR == "1.1.29" and
+check("⑨ 版本滚动到 2.0.0，manifest / 文档 / 安装表 / 预览字样一致",
+      CUR == "2.0.0" and
       ("version                    = " + CUR) in
           open(os.path.join(ROOT, "src", "manifest"), encoding="utf-8").read() and
       ("**" + CUR + "（当前版本）**") in
           open(os.path.join(ROOT, "docs", "CHANGELOG.md"), encoding="utf-8").read() and
-      "### 1.1.29 新增了什么" in open(os.path.join(ROOT, "docs", "使用说明.md"),
+      "### 1.1.30 新增了什么" in open(os.path.join(ROOT, "docs", "使用说明.md"),
                                       encoding="utf-8").read() and
-      "ipsense_1.1.29_all.fpk" in open(os.path.join(ROOT, "README.md"),
+      "ipsense_2.0.0_all.fpk" in open(os.path.join(ROOT, "README.md"),
                                        encoding="utf-8").read() and
       "1.1.25 起提交单分" in _h38)
 
@@ -3545,34 +3553,34 @@ check("⑤ CSS 无 .btn-note 孤儿样式，输入框仍 flex:1 占满",
       ".detail-ip-row{" in _c39 and
       "1.1.26：画像里的行内" in _c39)
 
-check("⑥ 版本滚动到 1.1.29：gateway / manifest / README 安装表",
-      CUR == "1.1.29" and 'VERSION = "1.1.29"' in _g39 and
-      "version                    = 1.1.29" in _m39 and
-      all(k in _r39 for k in ("ipsense_1.1.29_all.fpk",
-          "ipsense_1.1.29_x86.fpk", "ipsense_1.1.29_arm.fpk")))
+check("⑥ 版本滚动到 2.0.0：gateway / manifest / README 安装表",
+      CUR == "2.0.0" and 'VERSION = "2.0.0"' in _g39 and
+      "version                    = 2.0.0" in _m39 and
+      all(k in _r39 for k in ("ipsense_2.0.0_all.fpk",
+          "ipsense_2.0.0_x86.fpk", "ipsense_2.0.0_arm.fpk")))
 
-_seg39 = _cl39.split("**1.1.29（当前版本）**")[1].split("**1.1.28**")[0]
-check("⑦ 更新日志简版按规范新增 1.1.29，旧版自动降级",
-      "**1.1.29（当前版本）**" in _cl39 and
-      "**1.1.28（当前版本）**" not in _cl39 and
+_seg39 = _cl39.split("**2.0.0（当前版本）**")[1].split("**1.1.30**")[0]
+check("⑦ 更新日志简版按规范新增 2.0.0，1.1.30 自动降级",
+      "**2.0.0（当前版本）**" in _cl39 and
+      "**1.1.29（当前版本）**" not in _cl39 and
       "**1.1.27**" in _cl39 and
       _seg39.count("🧩") >= 3 and
       all(k not in _seg39 for k in ("优化体验", "修复若干问题", "本次更新")) and
       not re.search(r"[✨⌨🧹📦🛡📊]", _seg39))
 
 check("⑧ 文档同步：使用说明 / 详版 README / 排障指南 / 页脚 / 速查表",
-      "### 1.1.29 新增了什么" in _u39 and
+      "### 1.1.30 新增了什么" in _u39 and
       "1.1.26 起画像标注行只保留输入框" in _h39 and
       "行内「保存并加入提交单」按钮已移除" in _t39 and
-      "**1.1.29（当前版本）**" in _dr39 and
+      "**2.0.0（当前版本）**" in _dr39 and
       "标注行有个点了没反应" in _r39 and
       "26 条常见问题" in _t39 and
       "1.1.24 起改为弹窗" in _u39)
 
-check("⑨ 预览生成器与产物版本同步 1.1.29，离线 health mock 跟着走",
-      "version:'1.1.29'" in _p39 and
+check("⑨ 预览生成器与产物版本同步 2.0.0，离线 health mock 跟着走",
+      "version:'2.0.0'" in _p39 and
       "1.1.27" not in _p39 and
-      "version:'1.1.29'" in _pv39 and
+      "version:'2.0.0'" in _pv39 and
       "1.1.26 起画像标注行只保留输入框" in _pv39)
 
 check("⑩ 红线与后端零改动：只动前端，orders / gateway 接口不变",
@@ -3616,16 +3624,16 @@ _r40 = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
 _man40 = open(os.path.join(ROOT, "src", "manifest"), encoding="utf-8").read()
 _d40 = open(os.path.join(ROOT, "docs", "agent-bridge.md"), encoding="utf-8").read()
 
-check("① 版本滚动到 1.1.29：gateway / manifest / CHANGELOG / 详版 / 安装表 / 预览",
-      CUR == "1.1.29" and 'VERSION = "1.1.29"' in _g40 and
-      "version                    = 1.1.29" in _man40 and
-      "**1.1.29（当前版本）**" in _cl40 and
-      "**1.1.29（当前版本）**" in _dr40 and
-      "### 1.1.29 新增了什么" in _u40 and
-      all(k in _r40 for k in ("ipsense_1.1.29_all.fpk",
-          "ipsense_1.1.29_x86.fpk", "ipsense_1.1.29_arm.fpk")) and
-      "version:'1.1.29'" in _p40 and "version:'1.1.29'" in _pv40 and
-      gateway.render_index().decode("utf-8").count("1.1.29") >= 1)
+check("① 版本滚动到 2.0.0：gateway / manifest / CHANGELOG / 详版 / 安装表 / 预览",
+      CUR == "2.0.0" and 'VERSION = "2.0.0"' in _g40 and
+      "version                    = 2.0.0" in _man40 and
+      "**2.0.0（当前版本）**" in _cl40 and
+      "**2.0.0（当前版本）**" in _dr40 and
+      "### 1.1.30 新增了什么" in _u40 and
+      all(k in _r40 for k in ("ipsense_2.0.0_all.fpk",
+          "ipsense_2.0.0_x86.fpk", "ipsense_2.0.0_arm.fpk")) and
+      "version:'2.0.0'" in _p40 and "version:'2.0.0'" in _pv40 and
+      gateway.render_index().decode("utf-8").count("2.0.0") >= 1)
 
 check("② 后端新增 /api/keyauth/state 与 /api/keyauth/revoke，主包零系统命令",
       all(k in _g40 for k in ("from keyauth import KeyAuth",
@@ -3756,7 +3764,7 @@ check("⑩ fw：飞牛原生防火墙单通道可回滚 / 四命令 / 不读 ord
       "import fw" not in _g40 and
       "不调 /api/mh/write" in _f40 and _f40.count("/api/mh/write") == 1)
 
-check("⑪ agent-bridge 文档同步 1.1.29：fw / 密钥授权 / 直接执行",
+check("⑪ agent-bridge 文档同步 2.0.0：fw / 密钥授权 / 直接执行",
       all(k in _d40 for k in ("fw", "密钥授权", "直接执行", "争议",
           "mh key status", "fw ban")))
 
@@ -3776,7 +3784,7 @@ check("⑬ 文档与使用说明：密钥授权区 / 撤销 / 26 条常见问题
       "26 条常见问题" in _t40 and "密钥授权区" in _t40 and
       "想收回给 AI 的 SSH 授权" in _r40 and
       "Permission denied" in _r40 and
-      "## 当前版本：1.1.29" in _dr40)
+      "## 当前版本：2.0.0" in _dr40)
 
 try:
     import subprocess as _sp40
@@ -3809,17 +3817,17 @@ _o41 = open(os.path.join(SERVER, "orders.py"), encoding="utf-8").read()
 _ka41 = open(os.path.join(SERVER, "keyauth.py"), encoding="utf-8").read()
 _k41 = open(os.path.join(ROOT, "skills", "ipsense-agent-bridge", "SKILL.md"), encoding="utf-8").read()
 
-check("① 版本滚动到 1.1.29：gateway / manifest / CHANGELOG / 详版 / 使用说明 / 安装表 / 预览 / agent-bridge",
-      CUR == "1.1.29" and 'VERSION = "1.1.29"' in _g41 and
-      "version                    = 1.1.29" in _man41 and
-      "**1.1.29（当前版本）**" in _cl41 and
-      "**1.1.29（当前版本）**" in _dr41 and
-      "## 当前版本：1.1.29" in _dr41 and
-      "### 1.1.29 新增了什么" in _u41 and
-      all(k in _r41 for k in ("ipsense_1.1.29_all.fpk",
-          "ipsense_1.1.29_x86.fpk", "ipsense_1.1.29_arm.fpk")) and
-      "version:'1.1.29'" in _p41 and "version:'1.1.29'" in _pv41 and
-      "1.1.29 起" in _d41)
+check("① 版本滚动到 2.0.0：gateway / manifest / CHANGELOG / 详版 / 使用说明 / 安装表 / 预览 / agent-bridge",
+      CUR == "2.0.0" and 'VERSION = "2.0.0"' in _g41 and
+      "version                    = 2.0.0" in _man41 and
+      "**2.0.0（当前版本）**" in _cl41 and
+      "**2.0.0（当前版本）**" in _dr41 and
+      "## 当前版本：2.0.0" in _dr41 and
+      "### 1.1.30 新增了什么" in _u41 and
+      all(k in _r41 for k in ("ipsense_2.0.0_all.fpk",
+          "ipsense_2.0.0_x86.fpk", "ipsense_2.0.0_arm.fpk")) and
+      "version:'2.0.0'" in _p41 and "version:'2.0.0'" in _pv41 and
+      "1.1.30 起" in _d41)
 
 check("② 右上角入口在 orders-head 内、关闭左侧，带生效授权数角标与 aria",
       'class="orders-head-actions"' in _h41 and
@@ -3879,21 +3887,21 @@ check("⑨ 红线不变：后端零系统命令、主包无 iptables、只观测
       "只观测" in _r41 and "不改防火墙" in _r41 and
       "完全交给外部 agent" in _man41)
 
-check("⑩ 文档同步 1.1.29：简版 / 详版 / 使用说明 / 排障 26 条 / 速查表 / agent-bridge",
-      "**1.1.29（当前版本）**" in _cl41 and
+check("⑩ 文档同步 2.0.0：简版 / 详版 / 使用说明 / 排障 26 条 / 速查表 / agent-bridge",
+      "**2.0.0（当前版本）**" in _cl41 and
       "修复不同缩放下密钥授权挤压四区列表" in _cl41 and
-      "## 当前版本：1.1.29 · mh setup 引导与原生防火墙单通道" in _dr41 and
+      "## 当前版本：2.0.0 · 大版本更新" in _dr41 and
       "多缩放显示修复" in _dr41 and
-      "### 1.1.29 新增了什么" in _u41 and
-      "26 条常见问题" in _t41 and "1.1.29" in _t41 and
+      "### 1.1.30 新增了什么" in _u41 and
+      "26 条常见问题" in _t41 and "1.1.30" in _t41 and
       "不同缩放下「提交单」里密钥授权挤住列表" in _r41 and
-      "1.1.29 起" in _d41)
+      "1.1.30 起" in _d41)
 
 check("⑪ 预览页内联浮层结构与 keyauth 离线 mock，旧内嵌块清零",
       all(k in _pv41 for k in ("keyauth-pop", "orders-head-actions",
           "keyauth-entry", "api/keyauth/state", "api/keyauth/revoke")) and
       'class="keyauth"' not in _pv41 and
-      "1.1.29" in _pv41)
+      "1.1.30" in _pv41)
 
 check("⑫ 历史链路未回归：1.1.26 输入框 / 1.1.25 四区 / 1.1.24 提示词 / 1.1.27 直接执行",
       all(k in _h41 for k in ("ordersTabs", "btnCopyPrompt")) and
@@ -3902,11 +3910,11 @@ check("⑫ 历史链路未回归：1.1.26 输入框 / 1.1.25 四区 / 1.1.24 提
       'STATUSES = ("pending", "done", "revert", "restored")' in _o41 and
       "无需二次确认" in _k41 and "争议" in _k41)
 
-check("⑬ 更新日志简版按规范：1.1.29 置顶 / 1.1.28 降级 / 三种 emoji / 版本纯数字",
-      "**1.1.29（当前版本）**" in _cl41 and "**1.1.27**" in _cl41 and
-      "**1.1.28（当前版本）**" not in _cl41 and
-      not any(x in _cl41.split("**1.1.28**")[0] for x in
-              ("✨", "⌨️", "🧹", "📦", "🛡️", "📊", "🔧", "⚡", "v1.1.29")))
+check("⑬ 更新日志简版按规范：2.0.0 置顶 / 1.1.30 降级 / 三种 emoji / 版本纯数字",
+      "**2.0.0（当前版本）**" in _cl41 and "**1.1.27**" in _cl41 and
+      "**1.1.29（当前版本）**" not in _cl41 and
+      not any(x in _cl41.split("**1.1.29**")[0] for x in
+              ("✨", "⌨️", "🧹", "📦", "🛡️", "📊", "🔧", "⚡", "v1.1.30")))
 
 try:
     import subprocess as _sp41
@@ -4028,10 +4036,10 @@ check("⑪ agent-bridge 文档单通道口径：只写原生 / 通道收敛 / �
       "1.1.29 起没写时长就是永久封禁并持久化" in _d42 and
       "双写 iptables 与" not in _d42)
 
-check("⑫ 红线不变：主包零系统命令、无 fw.conf/iptables、版本滚到 1.1.29（正式发版）",
+check("⑫ 红线不变：主包零系统命令、无 fw.conf/iptables、版本滚到 2.0.0（正式发版）",
       all(not re.search(r"\b(iptables|fw\.conf|security_service|_native_add)\b", s)
           for s in (_g42, _o42, _ka42)) and
-      'VERSION = "1.1.29"' in _g42 and
+      'VERSION = "2.0.0"' in _g42 and
       "只观测、不封禁、不改防火墙、不自动处置" in _k42 and
       "不代执行" in _k42 and "不碰防火墙" in _k42)
 
@@ -4163,7 +4171,7 @@ check("⑦ 验证清单四项 + 排障指引齐全",
       "四项都过才算装好" in _k44)
 
 check("⑧ 版本对应表：主包 1.1.29 正式版 / 1.1.27 / 通道收敛",
-      "VERSION = 1.1.29" in _k44 and "1.1.27" in _k44 and
+      "VERSION = 2.0.0" in _k44 and "1.1.27" in _k44 and
       "「1.1.29」" in _k44 and "通道收敛 2026-11-23" in _k44 and
       "skill 侧的规矩 / CLI 更新通常不要求重新打包 FPK" in _k44)
 
@@ -4309,6 +4317,1114 @@ check("⑭ grant_id 前缀 / 标记 / 白名单与 keyauth.revoke 契约一致",
       'KEYDIR = "/vol1/@appdata/ipsense/keys"' in _m45 and
       'if not grant_id.startswith("mh1-"):' in _ka45 and
       "KEYDIR + os.sep" in _ka45)
+
+
+# === 46. 1.1.30：去除两个在线源 / 离线库主裁决 / 过滤软件自身访问 ===
+print("=== 46. 1.1.30 数据口径修复 ===")
+import collector as _cm46
+_c46 = Collector(app.store, geo, dict(cfg), lambda m: None)
+_c46on = Collector(app.store, geo, dict(cfg, filter_self_web=True), lambda m: None)
+_l46 = lambda p, r="-": ('203.0.113.9 - - [%s] "GET %s HTTP/1.1" 200 1234 "%s" "UA"'
+                         % (now, p, r))
+check("① 自身路径与自身来路在采集侧被丢弃",
+      _c46on.parse_web(_l46("/app/ipsense/api/status")) is None and
+      _c46on.parse_web(_l46("/", "http://192.168.3.5:5666/app/ipsense/")) is None)
+check("② 非自身 Web 访问照常解析，关闭过滤后基线样本可解析",
+      (_c46on.parse_web(_l46("/api/login")) or {}).get("path") == "/api/login" and
+      _c46.parse_web(_l46("/app/ipsense/")) is not None)
+check("③ 默认开启且可由配置关闭",
+      app.settings.get("filter_self_web") is True and
+      "filter_self_web" in set_src and '"filter_self_web": True' in set_src and
+      "filter_self_web" in col_src and "def is_self_web" in col_src)
+check("④ 自身访问判定不误伤同名字样路径",
+      _cm46.is_self_web("/app/ipsense/", "") and
+      _cm46.is_self_web("/app/ipsense/api/x?a=1", "-") and
+      not _cm46.is_self_web("/other/app/ipsense/", "") and
+      not _cm46.is_self_web("/index.html", "http://example.com/"))
+
+_e46 = []
+for _i46, (_p46, _r46, _ip46) in enumerate([
+        ("/app/ipsense/api/status", "-", "203.0.113.61"),
+        ("/api/x", "http://192.168.3.5:5666/app/ipsense/", "203.0.113.62"),
+        ("/index.html", "-", "203.0.113.63")]):
+    _ev46 = _c46.parse_web(_l46(_p46, _r46))
+    if _ev46:
+        _ev46["ts"] = time.time() - 10 - _i46
+        _ev46["ip"] = _ip46
+        _e46.append(_ev46)
+_c46._flush(_e46)
+_n46a = app.store.conn.execute(
+    "SELECT COUNT(*) FROM events WHERE ip IN ('203.0.113.61','203.0.113.62','203.0.113.63')").fetchone()[0]
+_n46b = app.store.purge_self_web()
+_n46c = app.store.purge_self_web()
+_left46 = app.store.conn.execute(
+    "SELECT COUNT(*) FROM events WHERE source='local_web' AND "
+    "(path LIKE '/app/ipsense%' OR referer LIKE '%/app/ipsense%')").fetchone()[0]
+_other46 = app.store.conn.execute(
+    "SELECT COUNT(*) FROM events WHERE source<>'local_web'").fetchone()[0]
+check("⑤ 历史自身访问清理幂等，且不动其它来源事件",
+      _n46a == 3 and _n46b >= 2 and _n46c == 0 and
+      _left46 == 0 and _other46 > 0,
+      "inserted=%d purged=%d again=%d left=%d other=%d"
+      % (_n46a, _n46b, _n46c, _left46, _other46))
+check("⑥ 启动时先清理再预热",
+      "self.store.purge_self_web()" in gw6 and
+      "def purge_self_web" in st_src)
+
+
+# ⑦～⑪ 1.1.30 全仓口径同步（面向用户的运行时文案 / 离线预览 / 裁决契约）
+_gs46 = open(os.path.join(SERVER, "geosource.py"), encoding="utf-8").read()
+_j46 = open(os.path.join(UI, "app.js"), encoding="utf-8").read()
+_sm46 = open(os.path.join(SERVER, "summary.py"), encoding="utf-8").read()
+_css46 = open(os.path.join(UI, "style.css"), encoding="utf-8").read()
+_man46 = open(os.path.join(ROOT, "src", "manifest"), encoding="utf-8").read()
+_p46 = open(os.path.join(ROOT, "tools", "make_preview.py"), encoding="utf-8").read()
+_pv46 = open(os.path.join(ROOT, "build", "preview-ipsense.html"), encoding="utf-8").read()
+_dr46 = open(os.path.join(ROOT, "docs", "README.md"), encoding="utf-8").read()
+_u46 = open(os.path.join(ROOT, "docs", "使用说明.md"), encoding="utf-8").read()
+_rm46 = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
+_ch46 = open(os.path.join(ROOT, "docs", "CHANGELOG.md"), encoding="utf-8").read()
+check("⑦ 裁决契约：离线库主裁决 + ip.sb 参考，两个在线源取数函数已删",
+      'SOURCES = ("ip2region(本地)", "ip.sb(参考)")' in _gs46 and
+      'FETCHERS = (("ip.sb", fetch_ipsb),)' in _gs46 and
+      "def fetch_ipapi" not in _gs46 and "def fetch_ipinfo" not in _gs46 and
+      "主裁决" in _gs46 and "参考" in _gs46)
+check("⑧ 运行时文案不再宣传被移除的两家源与 4 票多数派",
+      all(k not in x for x in (_j46, _sm46, _css46, _pv46)
+          for k in ("ip-api.com", "ipinfo.io", "4 票多数派", "多源交叉")))
+check("⑨ 设置页新增「过滤软件自身访问」开关",
+      "sw('filter_self_web', '过滤软件自身访问'" in _j46)
+check("⑩ 预览 mock 只有主裁决 / 参考两行，版本跟随 2.0.0",
+      "role:'主裁决'" in _p46 and "role:'参考'" in _p46 and
+      "online_sources:1" in _p46 and "version:'2.0.0'" in _pv46 and
+      "ip-api.com" not in _p46 and "ipinfo.io" not in _p46)
+check("⑪ 全仓版本与当前版本文档口径统一",
+      "version                    = 2.0.0" in _man46 and
+      "**2.0.0（当前版本）**" in _ch46 and
+      "ipsense_2.0.0_all.fpk" in _rm46 and
+      "### 1.1.30 新增了什么" in _u46 and
+      "## 当前版本：2.0.0 · 大版本更新" in _dr46 and
+      "离线主裁决" in _j46 and "离线主裁决" in _u46)
+
+# === 47. 2.0.0 B2：主界面平级 tab / 移动端 / 设置卡片弹窗 ===
+# 2.0.0 正式发版：B5 完成后一次性滚版，开发期 1.1.30 基线已结束。
+print("=== 47. 2.0.0 B2 平级 tab 与设置卡片 ===")
+_h47 = open(os.path.join(UI, "index.html"), encoding="utf-8").read()
+_j47 = open(os.path.join(UI, "app.js"), encoding="utf-8").read()
+_c47 = open(os.path.join(UI, "style.css"), encoding="utf-8").read()
+_pv47 = open(os.path.join(ROOT, "build", "preview-ipsense.html"), encoding="utf-8").read()
+check("① 首页四个平级 view 与布局切换齐备",
+      'id="mainTabs"' in _h47 and 'id="views"' in _h47 and
+      'id="btnLayout"' in _h47 and
+      all(('data-view="%s"' % v) in _h47 for v in
+          ("overview", "analysis", "records", "tools")) and
+      all(('id="view%s"' % s) in _h47 for s in
+          ("Overview", "Analysis", "Records", "Tools")))
+check("② 原有区块无损重排：所有关键 id 仍在",
+      all(('id="%s"' % k) in _h47 for k in
+          ("metrics", "complianceBanner", "geoCard", "mapStage", "worldMap",
+           "cnMap", "geoMap", "rankCard", "webCards", "liveList",
+           "trendSvg", "recBody", "btnExport", "footInfo")))
+check("③ view 用 grid 叠加且不用 display:none（地图 SDK 尺寸不丢）",
+      ".views{display:grid;align-items:start}" in _c47 and
+      ".view{grid-area:1/1;min-width:0;" in _c47 and
+      ".view.active{opacity:1;visibility:visible" in _c47 and
+      ".views.layout-scroll{display:block}" in _c47 and
+      "display:none" not in _c47.split(".views{display:grid")[1].split(".tools-card")[0])
+check("④ 前端有平级 tab 状态机与布局记忆",
+      "var VIEW_IDS = ['overview', 'analysis', 'records', 'tools'];" in _j47 and
+      "function switchMainView(v)" in _j47 and
+      "function initMainTabs()" in _j47 and
+      "ipsense.mainView" in _j47 and "ipsense.layout" in _j47 and
+      "initMainTabs();  // 2.0.0 B2" in _j47)
+check("⑤ 设置改居中卡片弹窗 + ≥5 个分组 tab（B3 起为 6）",
+      "#settingsDrawer{position:fixed;top:50%" in _c47 and
+      "#settingsDrawer.on{transform:translate(-50%,-50%)" in _c47 and
+      'id="settingsTabs"' in _j47 and
+      "function initSettingsTabs()" in _j47 and
+      all(('data-pane="%s"' % p) in _j47 for p in
+          ("data", "geo", "map", "collect", "diag")) and
+      _j47.count('class="settings-pane') >= 5)
+_seg47 = _j47[_j47.index("function renderSettings(sources)"):
+              _j47.index("$('settingsBody').innerHTML = html;")]
+_hh47 = "".join(re.findall(r"'((?:\\.|[^'\\])*)'", _seg47))
+check("⑥ 设置页 HTML 字符串 div 配平",
+      len(re.findall(r"<div\b", _hh47)) == len(re.findall(r"</div>", _hh47)))
+check("⑦ 移动端断点覆盖 tab / 卡片 / 设置弹窗",
+      "@media(max-width:820px)" in _c47 and
+      "@media(max-width:560px)" in _c47 and
+      ".web-grid,.tools-grid{grid-template-columns:1fr}" in _c47 and
+      "#settingsDrawer{width:100vw;height:100vh" in _c47)
+check("⑧ 工具卡只复用既有入口，红线提示在位",
+      'data-act="settings"' in _h47 and
+      "var map = { settings: 'btnSettings'" in _j47 and
+      "主包只观测、不封禁、不改防火墙、不自动处置" in _h47)
+check("⑨ 离线预览已同步 B2（内联 index / app / style）",
+      'id="mainTabs"' in _pv47 and "function initMainTabs()" in _pv47 and
+      'id="settingsTabs"' in _pv47 and ".views{display:grid" in _pv47)
+check("⑩ B5 完成后已正式滚版到 2.0.0",
+      'VERSION = "2.0.0"' in open(os.path.join(SERVER, "gateway.py"), encoding="utf-8").read() and
+      "version                    = 2.0.0" in
+      open(os.path.join(ROOT, "src", "manifest"), encoding="utf-8").read())
+
+
+# === 48. 2.0.0 B3：预警通知（严格纯外发 / 10 渠道 / 两类异常） ===
+print("\n=== 48. 2.0.0 B3 预警通知（纯外发 · 10 渠道 · 两类异常） ===")
+import base64                                          # noqa: E402
+import hashlib                                         # noqa: E402
+import hmac                                            # noqa: E402
+import smtplib                                         # noqa: E402
+import urllib.parse                                    # noqa: E402
+import urllib.request                                  # noqa: E402
+import notify as _n48                                  # noqa: E402
+import notifier as _nt48                               # noqa: E402
+
+_s48 = open(os.path.join(SERVER, "notify.py"), encoding="utf-8").read()
+_t48 = open(os.path.join(SERVER, "notifier.py"), encoding="utf-8").read()
+_g48 = open(os.path.join(SERVER, "gateway.py"), encoding="utf-8").read()
+_j48 = open(os.path.join(UI, "app.js"), encoding="utf-8").read()
+_c48 = open(os.path.join(UI, "style.css"), encoding="utf-8").read()
+_pv48 = open(os.path.join(ROOT, "build", "preview-ipsense.html"), encoding="utf-8").read()
+_mp48 = open(os.path.join(ROOT, "tools", "make_preview.py"), encoding="utf-8").read()
+
+_id48 = ("wecom_bot", "dingtalk", "feishu", "bark", "pushplus",
+         "magicpush", "smtp", "wecom_app", "webhook", "meow")
+try:
+    compile(_s48, "notify.py", "exec")
+    compile(_t48, "notifier.py", "exec")
+    _ok48a = True
+except SyntaxError:
+    _ok48a = False
+check("① notify.py / notifier.py 可执行，10 渠道元信息与 ADAPTERS 一一对应",
+      _ok48a and len(_n48.CHANNEL_IDS) == 10 and
+      set(_n48.CHANNEL_IDS) == set(_id48) and
+      set(_n48.ADAPTERS) == set(_id48) and
+      len(_n48.public_channels()) == 10 and
+      all(c["fields"] for c in _n48.public_channels()) and
+      len(_n48.SECRET_KEYS) > 0)
+
+_dts48, _dsg48 = _n48.dingtalk_sign("SECtest")
+_dh48 = hmac.new(b"SECtest", ("%s\nSECtest" % _dts48).encode("utf-8"),
+                 hashlib.sha256).digest()
+_dref48 = urllib.parse.quote_plus(base64.b64encode(_dh48).decode("ascii"))
+_fts48, _fsg48 = _n48.feishu_sign("SECtest", 1599360473)
+_fh48 = hmac.new("1599360473\nSECtest".encode("utf-8"), b"",
+                 hashlib.sha256).digest()
+_fref48 = base64.b64encode(_fh48).decode("ascii")
+check("② 钉钉毫秒 query 加签 / 飞书秒 body 加签与官方公式逐字一致",
+      len(_dts48) == 13 and _dsg48 == _dref48 and
+      _fts48 == "1599360473" and _fsg48 == _fref48 and
+      _n48.feishu_sign("SECtest", 1599360473)[1] == _fsg48)
+
+check("③ validate_url 拦元数据与非 http(s)，放行内网自托管地址",
+      all(_n48.validate_url(u)[0] == exp for u, exp in (
+          ("https://qyapi.weixin.qq.com/x", True),
+          ("http://192.168.3.5:5001/api", True),
+          ("file:///etc/passwd", False),
+          ("ftp://x/h", False),
+          ("http://169.254.169.254/latest/meta-data", False),
+          ("https://metadata.google.internal/x", False))))
+
+# 10 个 adapter 端到端构造：全程 monkeypatch 出网，结束后逐一恢复
+_calls48 = []
+_orig_http48 = _n48.http_json
+_orig_smtp48 = (smtplib.SMTP, smtplib.SMTP_SSL)
+_orig_urlopen48 = urllib.request.urlopen
+_CFG48 = {
+    "wecom_bot": {"webhook_url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=K"},
+    "dingtalk": {"webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=T",
+                 "secret": "SECs"},
+    "feishu": {"webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/H",
+               "secret": "SECf"},
+    "bark": {"base_url": "https://api.day.app", "device_key": "DK",
+             "basic_user": "u", "basic_pass": "p"},
+    "pushplus": {"token": "PT", "template": "markdown", "channel": "wechat"},
+    "magicpush": {"base_url": "http://192.168.3.5:5001/api",
+                  "push_token": "MT", "type": "markdown"},
+    "smtp": {"host": "smtp.qq.com", "port": "465", "security": "ssl",
+             "username": "u@q", "password": "pw", "from_addr": "u@q",
+             "to_addrs": "o@q"},
+    "wecom_app": {"corpid": "CID", "corpsecret": "CSEC",
+                  "agentid": "1000002", "touser": "@all"},
+    "webhook": {"url": "https://your.endpoint/hook", "auth_type": "bearer",
+                "auth_token": "BT", "headers": '{"X-T":"1"}',
+                "body_template": "", "success_matcher": ""},
+    "meow": {"base_url": "https://api.chuckfang.com",
+             "nickname": "昵称", "category": "告警"},
+}
+
+
+def _fake48(url, payload, headers=None, timeout=8, method="POST"):
+    _calls48.append((url, payload, headers or {}, method))
+    if "pushplus" in url:
+        return 200, json.dumps({"code": 200, "msg": "请求成功", "data": "flow123"})
+    if "qyapi.weixin.qq.com" in url and "gettoken" in url:
+        return 200, json.dumps({"errcode": 0, "access_token": "AT",
+                                "expires_in": 7200})
+    return 200, json.dumps({"errcode": 0, "code": 0, "success": True,
+                            "failedCount": 0, "status": 200, "data": "flow123",
+                            "errmsg": "ok", "msg": "ok"})
+
+
+class _FakeSMTP48(object):
+    def __init__(self, *a, **k):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def starttls(self, *a, **k):
+        pass
+
+    def login(self, *a, **k):
+        pass
+
+    def send_message(self, *a, **k):
+        pass
+
+
+class _Resp48(object):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self, *a):
+        return json.dumps({"errcode": 0, "access_token": "AT",
+                           "expires_in": 7200}).encode("utf-8")
+
+
+_res48 = {}
+_n48.http_json = _fake48
+smtplib.SMTP = smtplib.SMTP_SSL = _FakeSMTP48
+urllib.request.urlopen = lambda *a, **k: _Resp48()
+try:
+    for _ch48 in _n48.CHANNEL_IDS:
+        _r48 = _n48.send(_ch48, "测试标题", "测试正文",
+                         dict(_CFG48[_ch48], channel=_ch48,
+                              title_prefix="[ipsense]"))
+        _res48[_ch48] = _r48
+finally:
+    _n48.http_json = _orig_http48
+    smtplib.SMTP, smtplib.SMTP_SSL = _orig_smtp48
+    urllib.request.urlopen = _orig_urlopen48
+check("④ 10 个 adapter 全部构造成功（出网被 monkeypatch，不真连）",
+      len(_res48) == 10 and all(r["ok"] for r in _res48.values()),
+      " ".join("%s:%s" % (k, "ok" if v["ok"] else "FAIL")
+               for k, v in _res48.items()))
+
+_ding48 = [c for c in _calls48 if "oapi.dingtalk.com" in c[0]]
+_fs48 = [c for c in _calls48 if "open.feishu.cn/open-apis/bot" in c[0]]
+_bark48 = [c for c in _calls48 if "api.day.app" in c[0]]
+_magic48 = [c for c in _calls48 if "192.168.3.5:5001" in c[0]]
+_hook48 = [c for c in _calls48 if "your.endpoint" in c[0]]
+_meow48 = [c for c in _calls48 if "chuckfang" in c[0]]
+_push48 = [c for c in _calls48 if "pushplus" in c[0]]
+check("⑤ 渠道差异抽查：钉钉 query 加签 / 飞书 body 签名 / Bark Basic / "
+      "MagicPush Bearer / Webhook 出站契约 / MeoW 昵称编码",
+      bool(_ding48) and "timestamp=" in _ding48[0][0] and "sign=" in _ding48[0][0] and
+      bool(_fs48) and "sign" in _fs48[0][1] and "timestamp" in _fs48[0][1] and
+      bool(_bark48) and str(_bark48[0][2].get("Authorization", "")).startswith("Basic ") and
+      bool(_magic48) and str(_magic48[0][2].get("Authorization", "")).startswith("Bearer ") and
+      bool(_hook48) and _hook48[0][1].get("source") == "ipsense" and
+      _hook48[0][1].get("version") == _n48.PAYLOAD_VERSION and
+      str(_hook48[0][2].get("Authorization", "")).startswith("Bearer ") and
+      bool(_meow48) and "%E6%98%B5%E7%A7%B0" in _meow48[0][0] and
+      bool(_push48) and _push48[0][1].get("token") == "PT")
+
+_cnt48 = [0]
+
+
+def _fail48(url, payload, headers=None, timeout=8, method="POST"):
+    _cnt48[0] += 1
+    return 500, '{"errcode":500}'
+
+
+_n48.http_json = _fail48
+try:
+    _retry48 = _n48.send("wecom_bot", "t", "x",
+                         {"channel": "wecom_bot", "retry": 99,
+                          "webhook_url": "https://qyapi.weixin.qq.com/x"})
+finally:
+    _n48.http_json = _orig_http48
+check("⑥ 未注册渠道直接失败；retry 钳到 2（最多 3 次，仅可重试错误重试）",
+      _n48.send("no_such", "t", "x", {})["ok"] is False and
+      _cnt48[0] == 3 and _retry48["ok"] is False,
+      "retry_calls=%d" % _cnt48[0])
+
+# 独立实例做配置 / 检测行为验证，不污染主 app 的运行状态
+_dir48 = os.path.join(tmp, "notify48")
+os.makedirs(_dir48, exist_ok=True)
+
+
+class _Store48(object):
+    def __init__(self):
+        self.scan = []
+        self.traffic = []
+
+    def notify_scan_hits(self, since_ts, limit=200):
+        return list(self.scan)
+
+    def notify_traffic_rows(self, since_ts, limit=50000):
+        return list(self.traffic)
+
+
+_st48 = _Store48()
+_nt48o = _nt48.Notifier(_dir48, _st48, lambda m: None)
+_cfg48o = _nt48o.cfg
+check("⑦ 预警配置独立落 notify.json、默认关闭、不污染主配置白名单",
+      os.path.isfile(os.path.join(_dir48, "notify.json")) and
+      _cfg48o.raw()["enabled"] is False and _nt48.CONFIG_NAME == "notify.json" and
+      "notify_channels" not in
+      open(os.path.join(SERVER, "settings.py"), encoding="utf-8").read())
+
+_ch48 = {"id": "ch-test", "channel": "wecom_bot", "enabled": True,
+         "webhook_url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=SECRET48"}
+_cfg48o.update({"channels": [_ch48], "enabled": True, "interval": 999999})
+_pub48 = _cfg48o.public()
+_disk48 = json.load(open(os.path.join(_dir48, "notify.json"), encoding="utf-8"))
+check("⑧ public() 脱敏、落盘保留真值、数值钳制到上界",
+      _pub48["channels"][0]["webhook_url"] == _n48.MASK and
+      _disk48["channels"][0]["webhook_url"] == _ch48["webhook_url"] and
+      _cfg48o.raw()["interval"] == 3600)
+
+_cfg48o.update({"channels": [dict(_ch48, webhook_url=_n48.MASK)]})
+_a48 = _cfg48o.raw()["channels"][0]["webhook_url"]
+_cfg48o.update({"channels": [dict(_ch48, webhook_url="")]})
+_b48 = _cfg48o.raw()["channels"][0]["webhook_url"]
+_dir48b = os.path.join(tmp, "notify48b")
+os.makedirs(_dir48b, exist_ok=True)
+_c48b = _nt48.NotifyConfig(_dir48b)
+_c48b.update({"channels": [{"channel": "no_such", "id": "x"},
+                           {"channel": "webhook", "id": "y",
+                            "url": "https://x/hook"}]})
+check("⑨ 掩码回填保留凭证、显式空串清空、未知渠道与越界字段被过滤",
+      _a48 == _ch48["webhook_url"] and _b48 == "" and
+      len(_c48b.raw()["channels"]) == 1 and
+      _c48b.raw()["channels"][0]["channel"] == "webhook")
+
+check("⑩ RULE_META 两类规则齐备，字段与钳制表逐项对齐",
+      [r["id"] for r in _nt48.RULE_META] == ["scan", "traffic"] and
+      all("%s.%s" % (r["id"], f["key"]) in _nt48._CLAMP
+          for r in _nt48.RULE_META for f in r["fields"]) and
+      set(_nt48.DEFAULTS["rules"]) == {"scan", "traffic"})
+
+_cfg48o.update({"enabled": False})
+_off48 = _nt48o.detect()
+_cfg48o.update({"enabled": True,
+                "rules": {"scan": {"enabled": True, "window": 5,
+                                   "hits": 3, "ports": 2},
+                          "traffic": {"enabled": True, "window": 5,
+                                      "mb": 1, "single_mb": 1}}})
+_st48.scan = [{"ip": "198.51.100.7", "hits": 9, "ports": 5,
+               "last_ts": time.time(), "sources": "local_web"}]
+_st48.traffic = [("203.0.113.9", '"GET /big HTTP/1.1" 200 5242880 "-" "UA"')]
+_al48 = _nt48o.detect()
+check("⑪ 默认关闭不产出；开启后两类异常各自告警、文案如实不夸大",
+      _off48 == [] and len(_al48) == 2 and
+      {a["rule"] for a in _al48} == {"scan", "traffic"} and
+      all("未做任何处置" in a["text"] for a in _al48) and
+      any("上行无法统计" in a["text"] for a in _al48))
+
+_k48 = ("scan", "198.51.100.7")
+_cd1 = _nt48o._cooldown_ok(_k48, 300)
+_cd2 = _nt48o._cooldown_ok(_k48, 300)
+_cd3 = _nt48o._cooldown_ok(("scan", "198.51.100.8"), 300)
+_rl1 = _nt48o._rate_ok(1)
+_nt48o._mark_sent(1)
+_rl2 = _nt48o._rate_ok(1)
+check("⑫ 同规则同 IP 冷却抑制、换 IP 放行、全局每分钟配额生效",
+      _cd1 and not _cd2 and _cd3 and _rl1 and not _rl2)
+
+_orig_send48 = _n48.send
+_sent48 = []
+
+
+def _cap48(channel, title, text, cfg):
+    _sent48.append((channel, title, text))
+    return {"ok": True, "channel": channel, "msg": "captured",
+            "raw": None, "retryable": False}
+
+
+_n48.send = _cap48
+try:
+    _tr48 = _nt48o.test({"channel": {"channel": "webhook", "id": "ch-x"}})
+finally:
+    _n48.send = _orig_send48
+check("⑬ test() 只发一条测试消息，不触发检测、不改动防火墙",
+      len(_sent48) == 1 and _tr48["ok"] and
+      "测试" in _sent48[0][1] and "未改动防火墙" in _sent48[0][2] and
+      len(_nt48o.history_list()) >= 1)
+
+_state48 = _nt48o.state()
+check("⑭ state() 下发完整：配置脱敏 / 10 渠道 / 2 规则 / 出站契约版本 / 历史",
+      _state48["ok"] and len(_state48["channels"]) == 10 and
+      len(_state48["rules"]) == 2 and
+      _state48["payload_version"] == "2.0.0" and
+      isinstance(_state48["history"], list) and
+      all(c.get("webhook_url") in ("", _n48.MASK)
+          for c in _state48["config"]["channels"]))
+
+_orig_send48b = _n48.send
+_n48.send = lambda ch, t, x, c: {"ok": True, "channel": ch,
+                                  "msg": "captured", "raw": None,
+                                  "retryable": False}
+_routes48 = []
+try:
+    for _m48, _p48, _b48 in (
+            ("GET", "/api/notify/state", b""),
+            ("GET", "/api/notify/channels", b""),
+            ("GET", "/api/notify/history", b""),
+            ("POST", "/api/notify/config",
+             json.dumps({"enabled": False}).encode("utf-8")),
+            ("POST", "/api/notify/test",
+             json.dumps({"channel": {"channel": "webhook"}}).encode("utf-8")),
+            ("POST", "/api/notify/dispatch", b"{}")):
+        try:
+            _rr48 = gateway.api(app, _m48, _p48, {}, _b48)
+            _routes48.append((_p48, _rr48[0],
+                              isinstance(_rr48[1], dict) and
+                              _rr48[1].get("ok") is True))
+        except Exception:
+            _routes48.append((_p48, -1, False))
+finally:
+    _n48.send = _orig_send48b
+check("⑮ 6 个 /api/notify/* 接口端到端可调用且全部 200 / ok",
+      len(_routes48) == 6 and all(x[1] == 200 and x[2] for x in _routes48),
+      " ".join("%s:%s" % (x[0].split("/")[-1], x[1]) for x in _routes48))
+
+_bad48 = ("orders.json", "keyauth.json", "fw.conf", "iptables",
+          "subprocess", "os.system", "os.popen", "fw.py")
+_gseg48 = _g48[_g48.index("# ---------------- 2.0.0 B3 · 预警通知"):
+               _g48.index('if path == "/api/summary/download"')]
+_jseg48 = _j48[_j48.index("// ---------------- 2.0.0 B3 · 预警通知"):
+               _j48.index("function renderSettings(sources)")]
+_cseg48 = _j48[_j48.index("function collectNotify()"):
+               _j48.index("function notifyAddChannel()")]
+_bseg48 = _j48[_j48.index("function bindNotify()"):
+               _j48.index("function renderSettings(sources)")]
+check("⑯ 红线：预警后端 / 网关路由 / 前端不碰提交单、处置通道、系统命令",
+      not any(b in _s48 or b in _t48 or b in _gseg48 for b in _bad48) and
+      all(m in ("notify_scan_hits", "notify_traffic_rows")
+          for m in re.findall(r"self\.store\.(\w+)", _t48)) and
+      "data-k=" not in _jseg48 and "data-mk=" not in _jseg48 and
+      "api/config" not in _bseg48 and "api/export" not in _bseg48)
+
+check("⑰ 前端第 6 个平级 tab + 6 个 pane，预警输入独立属性不混进主配置",
+      'data-pane="notify"' in _j48 and "预警通知</button>" in _j48 and
+      _j48.count('class="settings-pane') == 6 and
+      all(('data-pane="%s"' % p) in _j48 for p in
+          ("data", "geo", "map", "collect", "diag", "notify")) and
+      all(a in _cseg48 for a in ("data-ng", "data-nr", "data-nf")) and
+      "data-k" not in _cseg48 and
+      "api/notify/config" in _bseg48 and "api/notify/state" in _bseg48 and
+      ".notify-grid" in _c48 and ".redline-note" in _c48 and
+      "@media(max-width:820px){.notify-grid" in _c48)
+
+check("⑱ 预览页同源 mock 由真实后端生成、6 个接口分支齐备、无残留标记",
+      "_notify.public_channels()" in _mp48 and "_notifier.RULE_META" in _mp48 and
+      "NOTIFY_MOCK_JS" in _mp48 and
+      "/*__NOTIFY_MOCK__*/" not in _pv48 and "notifyState" in _pv48 and
+      all(("api/notify/%s" % x) in _pv48 for x in
+          ("state", "channels", "history", "config", "test", "dispatch")))
+
+check("⑲ 正式版已滚到 2.0.0（B5 完成）",
+      CUR == "2.0.0" and 'VERSION = "2.0.0"' in _g48 and
+      "version                    = 2.0.0" in
+      open(os.path.join(ROOT, "src", "manifest"), encoding="utf-8").read())
+
+# === 49. 2.0.0 B4：地图动效覆盖层 / 启动加载动画 / 渲染性能 ===
+print("\n=== 49. 2.0.0 B4 地图动效覆盖层（流动光点 · 雷达 · 5 秒新点） ===")
+_j49 = open(os.path.join(UI, "app.js"), encoding="utf-8").read()
+_c49 = open(os.path.join(UI, "style.css"), encoding="utf-8").read()
+_h49 = open(os.path.join(UI, "index.html"), encoding="utf-8").read()
+_pv49 = open(os.path.join(ROOT, "build", "preview-ipsense.html"), encoding="utf-8").read()
+_mp49 = open(os.path.join(ROOT, "tools", "make_preview.py"), encoding="utf-8").read()
+_set49 = open(os.path.join(SERVER, "settings.py"), encoding="utf-8").read()
+_fx49 = _j49[_j49.index("// ================= 2.0.0 B4"):
+             _j49.index("var canvasTimer = null;")]
+_anim49 = _j49[_j49.index("function startCanvasAnim()"):
+               _j49.index("function stopCanvasAnim()")]
+_setmode49 = _j49[_j49.index("// 2.0.0 B4：切视图立即重画 FX"):
+                  _j49.index("function bindMapMode()")]
+_rt49 = open(os.path.join(ROOT, "build", "check_b4_runtime.py"),
+             encoding="utf-8").read()
+
+check("① index.html 三张 fx-layer canvas + 首帧加载遮罩齐备",
+      _h49.count('class="fx-layer"') == 3 and
+      all(('<canvas id="%sFx" class="fx-layer"' % w) in _h49
+          for w in ("world", "cn", "geo")) and
+      'class="map-loading" id="mapLoading"' in _h49 and
+      'class="ml-ring"' in _h49 and 'class="ml-txt"' in _h49)
+
+check("② CSS 层级：fx-layer z-index 1103 / pointer-events none / 遮罩淡出 / 移动端",
+      ".fx-layer{position:absolute;inset:0" in _c49 and
+      "pointer-events:none;z-index:1103" in _c49 and
+      ".map-loading.off{opacity:0;visibility:hidden}" in _c49 and
+      "@keyframes mlSpin" in _c49 and "@keyframes mlPulse" in _c49 and
+      "@media(max-width:560px){.ml-ring" in _c49 and
+      "@media(prefers-reduced-motion:reduce){.ml-ring" in _c49)
+
+check("③ 合规：FX 只画应用自有数据，声明不绘边界、不建 SDK geometry、不拉外部边界数据",
+      "不绘制任何国界、海岸线或行政区划边界" in _fx49 and
+      "边界一律以官方底图为准" in _fx49 and
+      not any(k in _fx49 for k in
+              ("MultiPolyline", "setGeometries(", "syncGeos(", "GeoJSON",
+               "fetch(", "XMLHttpRequest", "new Image(", "createTMaps(")) and
+      "ctx.ellipse(" in _fx49 and "ctx.arc(" in _fx49)
+
+check("④ 四引擎 project 像素投影齐备，坐标系与各自 coord 一致",
+      _j49.count("project: function (m, lat, lng)") == 4 and
+      "projectToContainer(new window.TMap.LatLng(lat, lng))" in _j49 and
+      "m.lngLatToContainer([lng, lat])" in _j49 and
+      "m.pointToPixel(new window.BMapGL.Point(c.lng, c.lat))" in _j49 and
+      "m.lngLatToContainer(new window.T.LngLat(c.lng, c.lat))" in _j49 and
+      "var c = gcjToBd(lat, lng);" in _j49 and
+      "var c = gcjToWgs(lat, lng);" in _j49 and
+      "var p = eng.project ? eng.project(nativeOf(m), lat, lng) : null;" in _fx49 and
+      "if (!S.tmapReady) return fallback;" in _fx49)
+
+check("⑤ drawFx 三件事：有 KEY 才补流动光点 / 出口 IP 雷达波纹 / 5 秒新点渐显渐隐",
+      "S.arcAnimate && S.tmapReady && which !== 'geo'" in _fx49 and
+      "var q = fxArcPoint(p.g, t);" in _fx49 and
+      "ctx.ellipse(hp[0], hp[1], r, r * 0.62" in _fx49 and
+      "fxPickReveal(which, now)" in _fx49 and
+      "REVEAL_MS" in _fx49 and "LIFE_MS" in _fx49 and
+      "ctx.globalAlpha = alpha" in _fx49 and
+      "ctx.globalAlpha = 0.92" in _fx49)
+
+check("⑥ 性能护栏：5 秒投放 / 光点上限 240 / 单 path 批量 fill / DPR / 后台暂停",
+      "REVEAL_MS: 5000" in _fx49 and "MAX_DOTS: 240" in _fx49 and
+      "REVEAL_N: 5" in _fx49 and "RINGS: 3" in _fx49 and
+      "ctx.beginPath();" in _fx49 and "ctx.fill();" in _fx49 and
+      "if (c.width !== pw || c.height !== ph)" in _fx49 and
+      "if (document.hidden) return;" in _anim49 and
+      "}, 60);" in _anim49)
+
+check("⑦ 统一动画循环：有 / 无 KEY 都驱动 drawFx，无 KEY 才额外重绘 Canvas",
+      "try { drawFx(); } catch (e) {}" in _anim49 and
+      "if (!S.tmapReady) { drawCanvas('world'); drawCanvas('cn'); }" in _anim49 and
+      "if (S.tmapReady || document.hidden) return;" not in _anim49 and
+      "S.anim += 2;" in _anim49)
+
+check("⑧ 加载遮罩：loadAll 完成淡出 + 6 秒兜底 + dataset 标记",
+      "loadAll().then(hideMapLoading).catch(hideMapLoading);" in _j49 and
+      "setTimeout(hideMapLoading, 6000);" in _j49 and
+      "document.body.dataset.mapLoading = 'off'" in _fx49 and
+      "function hideMapLoading()" in _fx49)
+
+check("⑨ 设置页三个动效开关 + 旧『静态弧线不做逐帧动画』口径已纠正",
+      all(("sw('%s'" % k) in _j49 for k in
+          ("map_fx", "map_fx_scan", "map_fx_reveal")) and
+      "底图模式为静态弧线，不做逐帧动画" not in _j49 and
+      "2.0.0 起底图 / 散点两条路径都有流动光点" in _j49 and
+      "S.fx.on = S.cfg.map_fx !== false;" in _j49 and
+      "S.fx.scan = S.cfg.map_fx_scan !== false;" in _j49 and
+      "S.fx.revealOn = S.cfg.map_fx_reveal !== false;" in _j49 and
+      "'map_base'" in _j49)
+
+check("⑩ 配置白名单 / 预览 mock / 预览页三者同源",
+      all(('"%s": True' % k) in _set49 for k in
+          ("map_fx", "map_fx_scan", "map_fx_reveal")) and
+      all(('"%s"' % k) in _set49 for k in
+          ("map_fx", "map_fx_scan", "map_fx_reveal")) and
+      "map_fx:true,map_fx_scan:true,map_fx_reveal:true" in _mp49 and
+      "map_fx:true" in _pv49 and "worldFx" in _pv49 and
+      'class="fx-layer"' in _pv49 and "hideMapLoading" in _pv49)
+
+check("⑪ 切视图清 reveal / 清旧层残留 / 立即重画 FX",
+      "S.fx.reveal = []" in _setmode49 and
+      "clearRect(0, 0, c.width, c.height)" in _setmode49 and
+      "drawFx();" in _setmode49 and
+      "Object.keys(FX.IDS).forEach" in _setmode49)
+
+check("⑫ B4 无头运行时探针存在且覆盖绘制像素 / 淡出 / 切视图重画",
+      "worldFxPainted" in _rt49 and "geoFxPaintedAfterSwitch" in _rt49 and
+      "mapLoadingOff" in _rt49 and "fxLayerCount" in _rt49 and
+      "jsErrors" in _rt49)
+
+check("⑬ 正式版已滚到 2.0.0（B5 完成）",
+      CUR == "2.0.0" and 'VERSION = "2.0.0"' in
+      open(os.path.join(SERVER, "gateway.py"), encoding="utf-8").read() and
+      "version                    = 2.0.0" in
+      open(os.path.join(ROOT, "src", "manifest"), encoding="utf-8").read())
+
+print("\n=== 50. 2.0.0 B5 卫星底图合规 + lucky 解析器框架（D 路径） ===")
+_j50 = open(os.path.join(UI, "app.js"), encoding="utf-8").read()
+_c50 = open(os.path.join(UI, "style.css"), encoding="utf-8").read()
+_h50 = open(os.path.join(UI, "index.html"), encoding="utf-8").read()
+_pv50 = open(os.path.join(ROOT, "build", "preview-ipsense.html"), encoding="utf-8").read()
+_mp50 = open(os.path.join(ROOT, "tools", "make_preview.py"), encoding="utf-8").read()
+_set50 = open(os.path.join(SERVER, "settings.py"), encoding="utf-8").read()
+_cl50 = open(os.path.join(SERVER, "collector.py"), encoding="utf-8").read()
+_prov50 = open(os.path.join(SERVER, "map_providers.py"), encoding="utf-8").read()
+_ab50 = open(os.path.join(ROOT, "build", "apply_b5.py"), encoding="utf-8").read()
+_rt50 = open(os.path.join(ROOT, "build", "check_b5_runtime.py"), encoding="utf-8").read()
+_lucky50 = _cl50[_cl50.index("# ---------- 2.0.0 B5 · lucky 日志解析器框架"):
+                 _cl50.index("def knock_pick(d, keys):")]
+_parsers50 = _cl50[_cl50.index("    def parse_lucky_web(self, line"):
+                   _cl50.index("    def set_verifier(self, verifier):")]
+_eng50 = _j50[_j50.index("      // 2.0.0 B5：卫星底图（腾讯 GL JS 官方 SDK，合规链路内）"):
+              _j50.index("      build: function () { return window.TMap; }")]
+_sat50 = _j50[_j50.index("  // ===== 2.0.0 B5 · 卫星底图"):
+              _j50.index("  // ===== B5 卫星底图结束 =====")]
+
+check("① map_base 默认 satellite / 进 STR_KEYS / update() 只收 vector|satellite",
+      '"map_base": "satellite"' in _set50 and
+      '"map_base", "lucky_web_log", "lucky_sys_log"' in _set50 and
+      'elif k == "map_base":' in _set50 and
+      'if v not in ("vector", "satellite"):' in _set50)
+
+from settings import Settings as _Settings50                 # noqa: E402
+_st50 = _Settings50(os.path.join(var, "b5_settings.json"))
+check("①b 运行时：map_base 非法值被拒、vector 可写入，默认 satellite",
+      _st50.get("map_base") == "satellite" and
+      "map_base" not in _st50.update({"map_base": "google"}) and
+      _st50.get("map_base") == "satellite" and
+      "map_base" in _st50.update({"map_base": "vector"}) and
+      _st50.get("map_base") == "vector")
+
+check("② lucky 四个预留配置：默认全关 / 空路径 / 进 BOOL_KEYS 与 STR_KEYS",
+      all(('"%s": %s' % (k, v)) in _set50 for k, v in
+          (("source_lucky_web", "False"), ("source_lucky_sys", "False"),
+           ("lucky_web_log", '""'), ("lucky_sys_log", '""'))) and
+      '"source_lucky_web", "source_lucky_sys",' in _set50 and
+      '"map_base", "lucky_web_log", "lucky_sys_log",' in _set50)
+
+check("③ collector.py 落地 LUCKY_* 占位正则 / 字段白名单 / 两个 source / 框架函数",
+      all(k in _lucky50 for k in
+          ("LUCKY_SOURCES", "LUCKY_TS", "LUCKY_LEVEL", "LUCKY_MODULE", "LUCKY_KV",
+           "LUCKY_IP_KEYS", "LUCKY_TS_KEYS", "LUCKY_HOST_KEYS", "LUCKY_PATH_KEYS",
+           "LUCKY_STATUS_KEYS", "LUCKY_METHOD_KEYS", "LUCKY_UA_KEYS",
+           "LUCKY_REF_KEYS", "LUCKY_PORT_KEYS", "LUCKY_TEXT_KEYS",
+           "def lucky_pick(d, keys):", "def lucky_fields(line):")) and
+      'LUCKY_SOURCES = ("lucky_web", "lucky_sys")' in _cl50 and
+      "knock_ip(" in _parsers50 and "knock_to_ts(" in _parsers50)
+
+_tailer50 = _cl50[_cl50.index("    def _build_tailers(self):"):
+                  _cl50.index("    def tailer_loop(self):")]
+_backfill50 = _cl50[_cl50.index("    def backfill(self, force=False):"):
+                    _cl50.index("    def start(self, do_backfill=True):")]
+check("④ D 路径红线：不接 LogTailer / 不拉后台 API / 不解析 .lkcf / 不改存量解析",
+      "source_lucky" not in _tailer50 and "lucky" not in _backfill50 and
+      "LogTailer(" not in _lucky50 and
+      all(k not in _parsers50 for k in
+          ("requests", "urllib", "urlopen", "lkcf", "OpenToken", "/api/logs")) and
+      all(("def parse_%s" % n) in _cl50 for n in
+          ("auth", "trimevent", "auth_any", "web", "kern", "router", "knock_app")) and
+      all(('"%s"' % s) in _cl50 for s in
+          ("local_auth", "fnos_audit", "local_web", "knock", "local_kern",
+           "router_syslog", "knock_app")))
+
+# 占位样例：只验证框架通用键值解析能力，不代表 lucky 真实日志格式
+_o50 = Collector.__new__(Collector)
+_o50.cfg = {"filter_self_web": True}
+_web50 = ('{"time":"2026-11-26 10:00:00","ClientIP":"203.0.113.42",'
+          '"Host":"nas.example.cn","Path":"/app","Status":200,'
+          '"Method":"GET","UserAgent":"curl/8"}')
+_e50 = _o50.parse_lucky_web(_web50)
+check("⑤ 占位样例：lucky_web 解析出 ip / source / layer / proto / status / sess_id / path",
+      _e50 and _e50["ip"] == "203.0.113.42" and
+      _e50["source"] == "lucky_web" and _e50["layer"] == "web" and
+      _e50["proto"] == "web" and _e50["scheme_conf"] == "" and
+      _e50["status"] == 200 and _e50["verdict"] == "normal" and
+      _e50["method"] == "GET" and _e50["ua"] == "curl/8" and
+      _e50["sess_id"] and _e50["path"] == "nas.example.cn/app" and
+      _e50["ts"] > 0)
+
+check("⑥ 严格 IP：时间戳 / 坏 JSON / 无 IP / 自身访问均不入脏数据",
+      _o50.parse_lucky_web("2026-11-26 10:00:00 11:20:31") is None and
+      _o50.parse_lucky_web("{broken json") is None and
+      _o50.parse_lucky_web("no ip here") is None and
+      _o50.parse_lucky_web('{"ClientIP":"203.0.113.42","Path":"/app/ipsense/api/status"}') is None and
+      _o50.parse_lucky_sys("no ip here") is None)
+
+_e50s = _o50.parse_lucky_sys("2026-11-26 10:00:00 [INFO] MAIN service started 192.168.3.5")
+check("⑦ 占位样例：lucky_sys 解析出 level / module / source / layer，verdict 恒 normal",
+      _e50s and _e50s["ip"] == "192.168.3.5" and
+      _e50s["source"] == "lucky_sys" and _e50s["layer"] == "system" and
+      "INFO" in _e50s["action"] and "MAIN" in _e50s["action"] and
+      _e50s["verdict"] == "normal" and _e50s["path"] == "")
+
+_e50scan = _o50.parse_lucky_web('{"ClientIP":"45.155.205.113","Path":"/.env","Status":404}')
+check("⑧ 扫描路径 / 4xx 判 scan；未匹配不夸大",
+      _e50scan and _e50scan["verdict"] == "scan" and
+      "拦截" in _e50scan["action"] and
+      _o50.parse_lucky_web('{"ClientIP":"8.8.8.8","Path":"/","Status":200}')["verdict"] == "normal")
+
+check("⑨ status() 上报两个 lucky 预留开关（默认 False）",
+      '"lucky_web_enabled": bool(self.cfg.get("source_lucky_web", False))' in _cl50 and
+      '"lucky_sys_enabled": bool(self.cfg.get("source_lucky_sys", False))' in _cl50)
+
+check("⑩ 卫星底图只走腾讯 GL JS 官方 setBaseMap，无裸瓦片 / 境外影像源 / 内置 KEY",
+      "setBaseMap: function (m, mode)" in _eng50 and
+      "{ type: 'satellite', features: ['base'] }" in _eng50 and
+      "{ type: 'vector' }" in _eng50 and
+      "m.setBaseMap(" in _eng50 and
+      not any(k in _eng50 for k in
+              ("TileLayer", "http://", "https://", "Google", "Bing", "Esri",
+               "OpenStreetMap", "Mapbox", "WMTS", "GetTile", "key=", "tk=")) and
+      _j50.count("setBaseMap: function (m, mode)") == 1)
+
+check("⑪ 合规说明：边界以官方底图为准 / 审图号 / 版权 / 自申请 KEY / 禁境外源",
+      '<select data-k="map_base" id="cfgMapBase">' in _j50 and
+      'value="satellite"' in _j50 and
+      'class="compliance-note"' in _j50 and
+      all(k in _j50 for k in
+          ("边界一律以官方合规底图为准", "审图号", "版权", "不内置任何有效 KEY",
+           "Referer", "禁止接入 Google / Bing / Esri / OSM", "不绘制任何边界")) and
+      "卫星影像（默认 · 无国界标注）" in _j50 and
+      "S.cfg.map_base === 'vector'" in _j50)
+
+check("⑫ 卫星底图接线：createTMaps 应用 / 变更走 rebuildMap / 注记与诊断同步",
+      "applyMapBase();" in _j50 and
+      "if (typeof eng.setBaseMap !== 'function') return;" in _sat50 and
+      "eng.setBaseMap(nativeOf(m), S.mapBase)" in _sat50 and
+      "['底图样式', mapBaseLabel()" in _j50 and
+      "'map_base']" in _j50 and
+      _j50.count("mapBaseLabel()") >= 4)
+
+check("⑬ 前端来源图例：fSource / SRC_NAME / 四个预留项 / 合规说明样式",
+      _h50.count('value="lucky_web"') == 1 and _h50.count('value="lucky_sys"') == 1 and
+      "lucky_web: 'Lucky 反代'" in _j50 and "lucky_sys: 'Lucky 系统'" in _j50 and
+      all(("sw('%s'" % k) in _j50 for k in
+          ("source_lucky_web", "source_lucky_sys")) and
+      all(("fld('%s'" % k) in _j50 for k in
+          ("lucky_web_log", "lucky_sys_log")) and
+      ".compliance-note{" in _c50)
+
+check("⑭ 离线预览同源：cfg / sources / 记录 mock 与产品代码一致，无占位残留",
+      "map_base:'satellite'" in _mp50 and
+      "source_lucky_web:false,source_lucky_sys:false" in _mp50 and
+      "lucky_web_log:'',lucky_sys_log:''" in _mp50 and
+      "lucky_web_enabled:false,lucky_sys_enabled:false" in _mp50 and
+      "source:'lucky_web'" in _mp50 and "source:'lucky_sys'" in _mp50 and
+      'data-k="map_base"' in _pv50 and 'value="lucky_web"' in _pv50 and
+      'class="compliance-note"' in _pv50 and
+      "/*__NOTIFY_MOCK__*/" not in _pv50)
+
+check("⑮ 合规白名单未被卫星接入改动：四家引擎 / BLOCKED_HINTS / 占位符 KEY",
+      'ENGINES = ("tmap", "amap", "bmapgl", "tianditu")' in _prov50 and
+      '"map.qq.com"' in _prov50 and
+      "BLOCKED_HINTS" in _prov50 and
+      '"google"' in _prov50 and
+      "MAP_KEY_PLACEHOLDER" in _prov50 and
+      "边界一律以官方底图为准" in _prov50)
+
+check("⑯ 可复现脚本 / 运行时探针 / 正式版已滚到 2.0.0",
+      "def sub(name, path, old, new, cnt=1)" in _ab50 and
+      _ab50.count("sub(") >= 20 and
+      "B5 apply done" in _ab50 and
+      "cfgMapBase" in _rt50 and "lucky_web" in _rt50 and "jsErrors" in _rt50 and
+      CUR == "2.0.0" and
+      'VERSION = "2.0.0"' in
+      open(os.path.join(SERVER, "gateway.py"), encoding="utf-8").read() and
+      "version                    = 2.0.0" in
+      open(os.path.join(ROOT, "src", "manifest"), encoding="utf-8").read())
+
+
+
+# === 51. 2.0.0 正式滚版（B5 完成后一次性跳版，B2~B5 汇总验收） ===
+print("\n=== 51. 2.0.0 正式滚版（完整版本链 + B2~B5 汇总） ===")
+_g51 = open(os.path.join(SERVER, "gateway.py"), encoding="utf-8").read()
+_m51 = open(os.path.join(ROOT, "src", "manifest"), encoding="utf-8").read()
+_cl51 = open(os.path.join(ROOT, "docs", "CHANGELOG.md"), encoding="utf-8").read()
+_dr51 = open(os.path.join(ROOT, "docs", "README.md"), encoding="utf-8").read()
+_u51 = open(os.path.join(ROOT, "docs", "使用说明.md"), encoding="utf-8").read()
+_t51 = open(os.path.join(ROOT, "docs", "排障指南.md"), encoding="utf-8").read()
+_rm51 = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
+_ab51 = open(os.path.join(ROOT, "docs", "agent-bridge.md"), encoding="utf-8").read()
+_k51 = open(os.path.join(ROOT, "skills", "ipsense-agent-bridge", "SKILL.md"),
+            encoding="utf-8").read()
+_h51 = open(os.path.join(UI, "index.html"), encoding="utf-8").read()
+_j51 = open(os.path.join(UI, "app.js"), encoding="utf-8").read()
+_c51 = open(os.path.join(UI, "style.css"), encoding="utf-8").read()
+_sm51 = open(os.path.join(SERVER, "summary.py"), encoding="utf-8").read()
+_p51 = open(os.path.join(ROOT, "tools", "make_preview.py"), encoding="utf-8").read()
+_pv51 = open(os.path.join(ROOT, "build", "preview-ipsense.html"), encoding="utf-8").read()
+_prov51 = open(os.path.join(SERVER, "map_providers.py"), encoding="utf-8").read()
+_n51 = open(os.path.join(SERVER, "notifier.py"), encoding="utf-8").read()
+_ny51 = open(os.path.join(SERVER, "notify.py"), encoding="utf-8").read()
+_clr51 = open(os.path.join(SERVER, "collector.py"), encoding="utf-8").read()
+check("① 运行时版本正式跳到 2.0.0（不再是 1.1.30，也不跳过 1.1.31~1.1.34）",
+      CUR == "2.0.0" and 'VERSION = "2.0.0"' in _g51 and
+      "version                    = 2.0.0" in _m51 and
+      "version                    = 1.1.30" not in _m51 and
+      all(("version                    = 1.1.%d" % x) not in _m51
+          for x in range(31, 35)))
+check("② 更新日志简版 2.0.0 置顶、1.1.30 降级为历史行、无 1.1.29 当前版本残留",
+      "**2.0.0（当前版本）**" in _cl51 and
+      "**1.1.30（当前版本）**" not in _cl51 and
+      "**1.1.30**" in _cl51 and "**1.1.29**" in _cl51 and
+      _cl51.index("**2.0.0（当前版本）**") < _cl51.index("**1.1.30**") and
+      "全仓版本滚动至 2.0.0" in _cl51)
+check("③ 三层结构与规范：纯数字版本号 / 三种 emoji / 一条一行 / 无空话",
+      all(k not in _cl51.split("**1.1.30**")[0] for k in
+          ("v2.0.0", "✨", "⌨️", "🧹", "📦", "🛡️", "📊", "优化体验",
+           "修复若干问题", "本次更新")) and
+      _cl51.split("**2.0.0（当前版本）**")[1].split("**1.1.30**")[0].count("🧩") >= 3)
+check("④ 8 份文档与页脚版本同步（详版 / 使用说明 / 排障 / 安装表 / agent-bridge / SKILL / 页脚）",
+      "## 当前版本：2.0.0 · 大版本更新" in _dr51 and
+      "**2.0.0（当前版本）**" in _dr51 and
+      "### 2.0.0 新增了什么" in _u51 and "### 1.1.30 新增了什么" in _u51 and
+      "2.0.0 起预警只外发" in _t51 and "2.0.0 起应用不内置任何有效密钥" in _t51 and
+      all(k in _rm51 for k in ("ipsense_2.0.0_all.fpk",
+                              "ipsense_2.0.0_x86.fpk", "ipsense_2.0.0_arm.fpk")) and
+      "主包 2.0.0 起新增平级 tab" in _ab51 and
+      "| 主包 `VERSION = 2.0.0` |" in _k51 and "「2.0.0」" in _k51 and
+      '<span id="footInfo">2.0.0 大版本' in _h51)
+check("⑤ 前端 / 汇总 / 预览同源：版本文案与数据口径随版滚动",
+      "version:'2.0.0'" in _p51 and "version:'2.0.0'" in _pv51 and
+      "2.0.0 起预警通知仅外发消息" in _sm51 and
+      "2.0.0 大版本" in gateway.render_index().decode("utf-8") and
+      "1.1.30 起归属判定改为" in gateway.render_index().decode("utf-8"))
+check("⑥ 静态 2.0.0 徽章与运行时版本一致（历史遗留自动消解）",
+      '<span class="tag tag-blue">2.0.0</span>' in _h51 and CUR == "2.0.0")
+check("⑦ B2 回归：4 平级 view / grid 叠加 / 设置卡片 / 移动端断点",
+      'id="mainTabs"' in _h51 and 'id="views"' in _h51 and
+      all(('data-view="%s"' % v) in _h51 for v in
+          ("overview", "analysis", "records", "tools")) and
+      ".views{display:grid;align-items:start}" in _c51 and
+      "@media(max-width:820px)" in _c51 and "@media(max-width:560px)" in _c51 and
+      "function initMainTabs()" in _j51 and "function initSettingsTabs()" in _j51)
+check("⑧ B3 回归：10 渠道 / 独立存储 / 6 个 API / 严格纯外发",
+      all(('"%s"' % k) in _ny51 for k in
+          ("wecom_bot", "dingtalk", "feishu", "bark", "pushplus",
+           "magicpush", "smtp", "wecom_app", "webhook", "meow")) and
+      "CHANNEL_IDS = " in _ny51 and
+      all(('"/api/notify/%s"' % x) in _g51 for x in
+          ("state", "channels", "history", "config", "test", "dispatch")) and
+      'data-pane="notify"' in _j51 and "notify.json" in _n51)
+check("⑨ B4 回归：三张 FX 覆盖层 / 加载遮罩 / 统一动画循环",
+      all(('id="%sFx"' % x) in _h51 for x in ("world", "cn", "geo")) and
+      'id="mapLoading"' in _h51 and ".fx-layer{" in _c51 and
+      "function drawFx()" in _j51 and "function fxProject(" in _j51 and
+      "function hideMapLoading()" in _j51 and "FX.REVEAL_MS" in _j51)
+check("⑩ B5 回归：腾讯卫星 setBaseMap / 合规说明 / Lucky 解析器框架",
+      "setBaseMap" in _j51 and "satellite" in _j51 and
+      'data-k="map_base"' in _j51 and ".compliance-note{" in _c51 and
+      'value="lucky_web"' in _h51 and 'value="lucky_sys"' in _h51 and
+      "def parse_lucky_web(" in open(os.path.join(SERVER, "collector.py"),
+                                      encoding="utf-8").read() and
+      "def parse_lucky_sys(" in open(os.path.join(SERVER, "collector.py"),
+                                      encoding="utf-8").read())
+check("⑪ 合规红线不变：四家引擎白名单 / 占位符 KEY / 不绘边界 / 拦境外源",
+      'ENGINES = ("tmap", "amap", "bmapgl", "tianditu")' in _prov51 and
+      "MAP_KEY_PLACEHOLDER" in _prov51 and "BLOCKED_HINTS" in _prov51 and
+      '"google"' in _prov51 and "边界一律以官方底图为准" in _prov51 and
+      "不绘制任何国界、海岸线或行政区划边界" in _j51)
+check("⑫ 主包红线不变：只观测 / 不封禁 / 不改防火墙 / 不自动处置",
+      "主包只观测、不封禁、不改防火墙、不自动处置" in _h51 and
+      "永远不改防火墙设置" in _h51 and
+      not re.search(r"\b(iptables|firewall-cmd|nftables|ufw)\b", _j51))
+check("⑬ 预警严格纯外发：独立存储 / 默认全关 / 不碰提交单与处置通道",
+      'CONFIG_NAME = "notify.json"' in _n51 and
+      '"enabled": False' in _n51 and "PAYLOAD_VERSION" in _ny51 and
+      "/api/mh/write" not in _n51 and "fw.conf" not in _n51 and
+      "def dispatch" in _n51 and "def _dispatch" in _n51)
+check("⑭ 全仓无 1.1.30 当前版本残留（历史事实表述保留）",
+      "**1.1.30（当前版本）**" not in _cl51 and
+      "## 当前版本：1.1.30" not in _dr51 and
+      'VERSION = "1.1.30"' not in _g51 and
+      "1.1.30 起归属判定改为离线库主裁决" in _ab51)
+check("⑮ 1.1.30 历史事实章节仍完整保留（不因跳版丢失）",
+      "### 1.1.30 新增了什么" in _u51 and
+      "1.1.30 只做数据口径修复" in _dr51 and
+      "**1.1.30**" in _cl51 and "离线主裁决" in _j51)
+check("⑯ 开发期脚本与四个运行时探针齐备，可作为 2.0.0 验收证据",
+      all(os.path.isfile(os.path.join(ROOT, "build", f)) for f in
+          ("apply_b2_layout.py", "apply_b2_appjs.py", "apply_b3_appjs.py",
+           "apply_b4.py", "apply_b5.py", "check_b2_runtime.py",
+           "check_b3_runtime.py", "check_b4_runtime.py", "check_b5_runtime.py")))
+check("⑰ manifest 的 changelog 与 desc 均前置 2.0.0 总述",
+      "2.0.0 大版本更新" in _m51 and "2.0.0 大版本" in _m51)
+check("⑱ health 接口返回 2.0.0（运行时契约）",
+      '"version": VERSION' in _g51 and CUR == "2.0.0")
+
+
+print("=== 52. 2.0.0 地图 / 设置界面返工（图片反馈六项） ===")
+_j52 = open(os.path.join(UI, "app.js"), encoding="utf-8").read()
+_h52 = open(os.path.join(UI, "index.html"), encoding="utf-8").read()
+_c52 = open(os.path.join(UI, "style.css"), encoding="utf-8").read()
+_se52 = open(os.path.join(SERVER, "settings.py"), encoding="utf-8").read()
+_mp52 = open(os.path.join(ROOT, "tools", "make_preview.py"), encoding="utf-8").read()
+_pv52 = open(os.path.join(ROOT, "build", "preview-ipsense.html"), encoding="utf-8").read()
+_fx52 = _j52[_j52.index("// ================= 2.0.0 B4"):
+             _j52.index("var canvasTimer = null;")]
+_dm52 = _j52[_j52.index("function drawMaps(force)"):
+             _j52.index("function requestMapDraw(force)")]
+_ct52 = _j52[_j52.index("function createTMaps()"):
+             _j52.index("// 增量同步")]
+_bg52 = _j52[_j52.index("function canvasBg("):
+             _j52.index("function drawCanvas(which)")]
+_sv52 = _j52[_j52.index("function saveConfig()"):
+             _j52.index("function exportCsv()")]
+_bn52 = _j52[_j52.index("function bindNotify()"):
+             _j52.index("function renderSettings(sources)")]
+
+check("① 根因修复：drawMaps 不再停动画，createTMaps / applyCfg 保证定时器常驻",
+      "stopCanvasAnim();" not in _dm52 and
+      "startCanvasAnim();" in _ct52 and
+      "if (S.fx.on) startCanvasAnim(); else stopCanvasAnim();" in _j52 and
+      _j52.count("function stopCanvasAnim()") == 1)
+
+check("② 流动光点两条路径都由常驻定时器驱动（有 KEY 也不再断）",
+      "try { drawFx(); } catch (e) {}" in _j52 and
+      "if (!S.tmapReady) { drawCanvas('world'); drawCanvas('cn'); }" in _j52 and
+      "S.arcAnimate && S.tmapReady && which !== 'geo'" in _fx52)
+
+check("③ 图层串位修复：每帧清掉非激活 FX canvas 的残留帧",
+      "function fxClearInactive(which)" in _fx52 and
+      "fxClearInactive(which);" in _fx52 and
+      "Object.keys(FX.IDS).forEach" in _fx52)
+
+check("④ 雷达回滚 GA：只保留三层椭圆波纹，B6 重制装饰全部移除",
+      all(k not in _fx52 for k in ("createRadialGradient", "createLinearGradient",
+          "ctx.save(); ctx.translate", "ctx.rotate(sweep)", "ctx.closePath()",
+          "扫描扇", "外圈刻度", "十字准星")) and
+      "ctx.ellipse(hp[0], hp[1], r, r * 0.62, 0, 0, Math.PI * 2)" in _fx52 and
+      "ctx.ellipse(hp[0], hp[1], r * 0.72, r * 0.45, 0, 0, Math.PI * 2)" in _fx52 and
+      "RINGS: 3" in _fx52)
+
+check("⑤ 雷达回滚不越合规红线：仍只画应用自有数据，不建 SDK geometry / 不拉外部资源",
+      "不绘制任何国界、海岸线或行政区划边界" in _fx52 and
+      not any(k in _fx52 for k in ("MultiPolyline", "setGeometries(", "fetch(",
+              "new Image(", "createTMaps(", "XMLHttpRequest")))
+
+check("⑥ 保存配置移到设置抽屉右上角（drawer-head，不在任何 pane 内）",
+      'class="btn primary btn-save-top" id="btnSaveCfg"' in _h52 and
+      "drawer-head-actions" in _h52 and
+      'id="saveBadge" hidden' in _h52 and
+      _j52.count('id="btnSaveCfg"') == 0 and
+      "$('btnSaveCfg').onclick = saveConfig;" in _j52)
+
+check("⑦ 采集策略 pane 只留即时操作 + 统一保存说明",
+      "统一点右上角「保存配置」生效" in _j52 and
+      "以上三项为即时操作，不需要保存" in _j52 and
+      all(k in _j52 for k in ("btnReload", "btnExport2", "btnBackfill")))
+
+check("⑧ 一次点击统一保存：全局配置 + 预警配置一起提交",
+      "function collectNotifySafe()" in _j52 and
+      "var notifyPatch = collectNotifySafe();" in _sv52 and
+      "api('api/notify/config', 'POST', notifyPatch)" in _sv52 and
+      "S.settingsDirty = false; updateSaveBadge();" in _sv52 and
+      "function updateSaveBadge()" in _j52)
+
+check("⑨ 预警面板去掉第二套保存按钮，兼容分支仍不碰红线",
+      "notify-save-tip" in _j52 and
+      "统一点右上角" in _j52 and
+      'class="btn primary" data-act="save">保存预警配置</button>' not in _j52 and
+      "api/notify/config" in _bn52 and
+      "api/config" not in _bn52)
+
+check("⑩ 未保存修改标记：输入变更打标、保存后清除、样式齐备",
+      "$('settingsBody').oninput" in _j52 and
+      "$('settingsBody').onchange" in _j52 and
+      ".save-badge{" in _c52 and ".btn-save-top.dirty{" in _c52 and
+      "@media(max-width:560px){.btn-save-top" in _c52)
+
+check("⑪ 卫星底图成为默认：后端 / 前端 / 运行时 / 预览 mock 同源",
+      '"map_base": "satellite"' in _se52 and
+      "mapBase: 'satellite'" in _j52 and
+      "S.cfg.map_base === 'vector' ? 'vector' : 'satellite'" in _j52 and
+      "map_base:'satellite'" in _mp52 and
+      "map_base:'satellite'" in _pv52)
+
+check("⑫ 卫星底图无国界标注：官方 features / 下拉文案 / 合规声明保留",
+      "卫星影像（默认 · 无国界标注）" in _j52 and
+      "只加载影像主体，不叠加国界 / 省界 / 行政区划标注" in _j52 and
+      "边界一律以官方合规底图为准" in _j52 and
+      "禁止接入 Google / Bing / Esri / OSM" in _j52 and
+      "审图号" in _j52 and "版权" in _j52 and
+      "{ type: 'satellite', features: ['base'] }" in _j52)
+
+check("⑬ 无 KEY 降级改抽象卫星质感：删除经纬网 / 不绘任何边界 / 不拉外部影像",
+      "setLineDash" not in _bg52 and
+      "c.moveTo(x, 0)" not in _bg52 and
+      "createRadialGradient" in _bg52 and
+      "程序化细颗粒" in _bg52 and
+      "非地图影像 · 未绘制任何边界" in _bg52 and
+      "卫星风格坐标散点示意" in _j52 and
+      not any(k in _bg52 for k in ("http://", "https://", "new Image(", "fetch(")))
+
+check("⑭ 文案纠错：不再写『散点模式』/『神识』，保存指引统一到右上角",
+      "散点模式流动光点" not in _j52 and
+      "伪 3D 神识效果" not in _j52 and
+      "弧线流动光点" in _j52 and
+      "本机位置与上方所有分组的配置" in _j52 and
+      "采集器在点右上角「保存配置」后自动重载" in _j52)
+
+check("⑮ 主包红线与版本不变：仍是 2.0.0，仍只观测 / 不封禁 / 不改防火墙",
+      'VERSION = "2.0.0"' in _g51 and
+      "主包只观测、不封禁、不改防火墙、不自动处置" in _h52 and
+      "纯外发 · 只观测 · 不封禁 · 不改防火墙 · 不自动处置" in _j52)
+
+check("⑯ 预览页与产品代码同源：保存按钮 / 卫星默认 / FX 修复都进内联页",
+      'id="btnSaveCfg"' in _pv52 and
+      "function fxClearInactive(which)" in _pv52 and
+      "function fxArcPoint(g, t)" in _pv52 and
+      "fxSdkPoint(which, q.lat, q.lng, s, home)" in _pv52 and
+      "createRadialGradient" in _pv52 and
+      "map_base:'satellite'" in _pv52 and
+      "卫星影像（默认 · 无国界标注）" in _pv52)
+
+check("⑰ 返工脚本与运行时探针齐备（可复现验收）",
+      all(os.path.isfile(os.path.join(ROOT, "build", f)) for f in
+          ("apply_b6_ui.py", "check_b6_runtime.py")))
+
+
+print("=== 53. 2.0.0 二次返工（图片反馈：光点不在线上 + 雷达回滚） ===")
+_j53 = _j52
+_fx53 = _j53[_j53.index("// ================= 2.0.0 B4"):
+             _j53.index("var canvasTimer = null;")]
+_dm53 = _j53[_j53.index("function drawMaps(force)"):
+             _j53.index("function requestMapDraw(force)")]
+_b7js = os.path.join(ROOT, "build", "check_b7_arc_align.py")
+_b7out = os.path.join(ROOT, "build", "_b7_arc_align.json")
+
+check("① 光点不再用 bezierAt 重算经纬度，改取 SDK 折线 sdkSegs 顶点",
+      "function fxArcPoint(g, t)" in _fx53 and
+      "g.sdkSegs" in _fx53 and
+      "var q = fxArcPoint(p.g, t);" in _fx53 and
+      "bezierAt(p.g, t)" not in _fx53)
+
+check("② 光点只走引擎原生投影，避免等距 fallback 与 SDK 底图坐标系错配",
+      "function fxSdkPoint(which, lat, lng, s, home)" in _fx53 and
+      "fxSdkPoint(which, q.lat, q.lng, s, home)" in _fx53 and
+      "eng.project(nativeOf(m), lat, lng)" in _fx53 and
+      "document.body.dataset.fxProjMode" in _fx53)
+
+check("③ seam 保护：相邻点经度差 >180° 不插值，光点不横穿整幅地图",
+      "Math.abs(pts[hi].lng - pts[lo].lng) > 180" in _fx53)
+
+check("④ 雷达回滚到 GA 三层椭圆波纹，B6 重制装饰全文件清除",
+      all(k not in _j53 for k in ("扫描扇", "十字准星", "外圈刻度",
+          "重制后更清晰", "ctx.rotate(sweep)")) and
+      "以本机 / 出口 IP 为中心一圈圈向外扩散的椭圆波纹" in _j53)
+
+check("⑤ 无 KEY Canvas 路径仍用 bezierAt（与 g.segs 同窗口，本来就在弧线上）",
+      "var q = bezierAt(p.g, t);" in _j53 and
+      "proj(q.lat, unwrapTo(q.lng, home.lng), b, w, h)" in _j53)
+
+check("⑥ B6 其余修复完整保留（常驻定时器 / 清帧 / 统一保存 / 默认卫星）",
+      all(k in _j53 for k in ("function fxClearInactive(which)",
+          "FX 覆盖层定时器必须常驻", "function collectNotifySafe()",
+          "function updateSaveBadge()", "mapBase: 'satellite'",
+          "卫星影像（默认 · 无国界标注）")) and
+      "stopCanvasAnim();" not in _dm53)
+
+check("⑦ 数值验证脚本与结果齐备：光点像素到 SDK 折线距离 0px",
+      os.path.isfile(_b7js) and os.path.isfile(_b7out) and
+      json.load(open(_b7out, encoding="utf-8")).get("fail") == 0)
+
+check("⑧ 主包红线与版本不变：2.0.0 / 只观测 / 不封禁 / 不改防火墙",
+      'VERSION = "2.0.0"' in _g51 and
+      "主包只观测、不封禁、不改防火墙、不自动处置" in _h52 and
+      "纯外发 · 只观测 · 不封禁 · 不改防火墙 · 不自动处置" in _j53)
 
 print("\n=== 结果：%d 项通过 / %d 项失败 ===" % (ok, len(fail)))
 if fail:

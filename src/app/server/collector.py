@@ -138,6 +138,32 @@ SCAN_PATH = re.compile(
     r"echo\.php|/wls-wsat|/dubbo|/config\.json|/npm/|/owa/|/ecp/|/remote/|"
     r"/cgi/|\.asp$|\.jsp$|/login\.cgi|/sdk|/debug|/probe|/test\.php)", re.I)
 STATIC_PATH = re.compile(r"(?i)\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|map|webp)(\?|$)")
+
+# ---------- 1.1.30 · 过滤软件自身访问 ----------
+# fnOS 把 /app/ipsense/* 转发给本应用，这些页面与 API 轮询都会写进共享的
+# /usr/trim/nginx/logs/access.log。它们是应用自己的心跳，不是外部来访，
+# 却会挤进协议构成、来路 TOP、受访页、入口页与总量指标。
+SELF_WEB_PREFIX = "/app/ipsense"
+REF_PATH = re.compile(r"^[a-z]+://[^/]+(/[^?#\s]*)", re.I)
+
+
+def is_self_web(path, referer, prefix=SELF_WEB_PREFIX):
+    """path 或来路的路径命中应用自身前缀即为自身访问。
+
+    与 src/app/ui/config 的 gatewayPrefix 保持一致；只比路径部分，
+    不把域名里恰好带这些字样的外部来路误判为自身请求。
+    """
+    def hit(p):
+        p = (p or "").split("?", 1)[0].split("#", 1)[0]
+        return p == prefix or p.startswith(prefix + "/")
+
+    if hit(path):
+        return True
+    r = (referer or "").strip()
+    if not r:
+        return False
+    m = REF_PATH.match(r)
+    return hit(m.group(1)) if m else (r.startswith("/") and hit(r))
 SENSITIVE_PORTS = {21, 22, 23, 25, 110, 135, 139, 445, 1433, 1521, 3306, 3389,
                    5432, 5900, 6379, 8080, 8443, 9200, 11211, 27017}
 
@@ -161,6 +187,72 @@ KNOCK_METHOD_KEYS = ("method", "http_method")
 KNOCK_STATUS_KEYS = ("status_code", "status", "http_status")
 KNOCK_PORT_KEYS = ("host_port", "server_port", "port")
 KNOCK_SCHEME_KEYS = ("scheme", "forwarded_proto", "protocol")
+
+# ---------- 2.0.0 B5 · lucky 日志解析器框架（D 路径：占位骨架） ----------
+# 真机只读取证（docs/lucky_probe_result.md）：lucky 3.8.2 为 fnOS 原生应用，
+# /var/log/apps/Lucky.log 为 0 字节、反代 Web 访问日志不落盘、*.lkcf 为二进制配置。
+# 因此本批次不接 LogTailer、不接后台 API、不把任何臆测行格式写死进产品。
+# 这里只提供「宽松键值提取 + 严格 IP 校验 + 保守字段映射」的解析器框架，
+# 并配基于占位样例的单测；拿到后台「日志中心」原始文本后，再按
+# docs/lucky_log_research.md 5.6 清单校准 LUCKY_LEVEL / LUCKY_MODULE 白名单。
+LUCKY_SOURCES = ("lucky_web", "lucky_sys")
+# 占位：时间戳文本宽松识别（统一交给 knock_to_ts() 转换，不另写一套时间解析）
+LUCKY_TS = re.compile(
+    r"(?<!\d)(\d{4}[-/]\d{2}[-/]\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?"
+    r"(?:[+-]\d{2}:?\d{2}|Z)?)")
+# 占位：仅 MAIN 有用户截图证据，其余模块名待真实样例补全
+LUCKY_LEVEL = re.compile(r"(?i)\b(DEBUG|INFO|WARN|WARNING|ERROR|FATAL|TRACE)\b")
+LUCKY_MODULE = re.compile(r"(?i)\b(MAIN)\b")
+# 占位：文本里的 键=值 / 键:值；字段缺失一律留空，绝不猜值
+LUCKY_KV = re.compile(r"([a-z_][a-z0-9_]*)\s*[:=]\s*([^\s,;{}\[\]]+)", re.I)
+LUCKY_IP_KEYS = ("client_ip", "clientip", "real_client_ip", "remote_ip",
+                 "remoteip", "src_ip", "ip", "x_forwarded_for", "x_real_ip")
+LUCKY_TS_KEYS = ("time", "timestamp", "ts", "logged_time", "date", "datetime")
+LUCKY_HOST_KEYS = ("host", "authority", "forwarded_host", "server_name")
+LUCKY_PATH_KEYS = ("path", "request_uri", "uri", "request_path", "url")
+LUCKY_STATUS_KEYS = ("status_code", "status", "http_status", "code")
+LUCKY_METHOD_KEYS = ("method", "http_method", "request_method")
+LUCKY_UA_KEYS = ("user_agent", "useragent", "ua", "http_user_agent")
+LUCKY_REF_KEYS = ("referer", "referrer")
+LUCKY_PORT_KEYS = ("host_port", "server_port", "port")
+LUCKY_TEXT_KEYS = ("action", "decision", "event", "reason", "message", "msg")
+
+
+def lucky_pick(d, keys):
+    """按字段白名单取值；缺失 / 脏值一律返回空串，不猜值。"""
+    for k in keys:
+        v = d.get(k)
+        if v is None or isinstance(v, (dict, list, bool)):
+            continue
+        s = str(v).strip()
+        if s and s.lower() not in ("-", "null", "none"):
+            return s
+    return ""
+
+
+def lucky_fields(line):
+    """宽松提取行内键值：JSON 对象优先，再叠加文本键值。字段缺失一律留空。
+
+    这里只做「通用键值框架」，不代表 lucky 真实日志格式；没有样例前
+    不写死任何分隔符 / 级别 / 模块名。
+    """
+    d = {}
+    raw = (line or "").strip()
+    if "{" in raw:
+        try:
+            obj = json.loads(raw[raw.find("{"):raw.rfind("}") + 1])
+            if isinstance(obj, dict):
+                d.update({str(k).lower(): v for k, v in obj.items()})
+        except Exception:
+            pass
+    norm = raw.replace('"', " ").replace("'", " ")
+    for m in LUCKY_KV.finditer(norm):
+        k = m.group(1).lower()
+        v = (m.group(2) or "").strip()
+        if k not in d and v:
+            d[k] = v
+    return d
+
 
 
 def knock_pick(d, keys):
@@ -545,7 +637,8 @@ class Collector(object):
 
         $request 形如 "GET /app/xxx?a=1 HTTP/1.1"，用 split 拆比正则更耐受畸形行；
         末两段 referer / UA 是可选组，缺字段的自定义日志也不会整行丢弃。
-        静态资源仍照常入库（保证访问总量口径不变），只在「受访页 / 入口页」聚合时剔除。
+        静态资源仍照常入库（保证访问总量口径不变），只在「受访页 / 入口页」聚合时剔除；
+        1.1.30 起应用自身 /app/ipsense/ 路径与来路在采集侧直接丢弃，不入库。
         """
         m = NGINX_COMBINED.match(line)
         if not m:
@@ -556,6 +649,12 @@ class Collector(object):
         parts = request.split()
         method = parts[0] if parts else ""
         path = parts[1] if len(parts) > 1 else ""
+        # 1.1.30：软件自身 /app/ipsense/ 的页面与 API 轮询也落在共享
+        # access.log 里，量级远超真实外部访问（实测单日数万条），会把
+        # 协议构成 / 来路 TOP / 受访页 / 入口页全部带偏。采集侧直接丢弃，
+        # 不入库、不进任何统计；历史存量由 store.purge_self_web() 清理。
+        if self.cfg.get("filter_self_web", True) and is_self_web(path, referer):
+            return None
         ts = to_ts_nginx(tstext)
         st = int(status)
         # 1.1.18：目标端口按「日志显式字段 → 端口映射 → 同站来路」多级读取，
@@ -693,6 +792,111 @@ class Collector(object):
         ev["ua"] = knock_pick(d, KNOCK_UA_KEYS)[:300]
         ev["referer"] = knock_pick(d, KNOCK_REF_KEYS)[:300]
         return self._tag(ev, "knock", proto)
+
+    def parse_lucky_web(self, line, log_path=""):
+        """2.0.0 B5：lucky 反代 Web 访问日志解析框架（D 路径占位骨架）。
+
+        只依赖「行内键值 + 严格 IP 校验」，不写死任何臆测的 lucky 行格式；
+        无合法 IP 一律丢弃，避免把时间戳 / 模块名误判成地址。
+        字段缺失留空、无 scheme 证据标 web、自身访问不入库。
+        """
+        raw = (line or "").strip()
+        if not raw:
+            return None
+        d = lucky_fields(raw)
+        ip = ""
+        for k in LUCKY_IP_KEYS:
+            ip = knock_ip(d.get(k))
+            if ip:
+                break
+        if not ip:
+            for cand in IP_ANY.findall(raw):
+                if cand.startswith(("127.", "0.")):
+                    continue
+                ip = knock_ip(cand)
+                if ip:
+                    break
+        if not ip:
+            return None
+        ts = 0
+        for k in LUCKY_TS_KEYS:
+            ts = knock_to_ts(d.get(k))
+            if ts:
+                break
+        if not ts:
+            m = LUCKY_TS.search(raw)
+            ts = knock_to_ts(m.group(1)) if m else time.time()
+        host = lucky_pick(d, LUCKY_HOST_KEYS)
+        path = lucky_pick(d, LUCKY_PATH_KEYS)
+        referer = lucky_pick(d, LUCKY_REF_KEYS)
+        target = ((host + (path if path.startswith("/") else "/" + path)) if path
+                  else host) if host else (path or "—")
+        # 与 parse_web 一致：软件自身 /app/ipsense 访问不进统计
+        if self.cfg.get("filter_self_web", True) and is_self_web(target, referer):
+            return None
+        status = lucky_pick(d, LUCKY_STATUS_KEYS)
+        try:
+            st = int(status[:3]) if status.isdigit() else 0
+        except Exception:
+            st = 0
+        txt = " ".join(lucky_pick(d, (k,)) for k in LUCKY_TEXT_KEYS).lower()
+        verdict = "scan" if (SCAN_PATH.search(path) or st in (401, 403, 404) or
+                             re.search(r"block|deny|denied|reject|forbidden|拦截", txt)) else "normal"
+        port = 0
+        pv = lucky_pick(d, LUCKY_PORT_KEYS)
+        if pv.isdigit():
+            port = int(pv)
+        ua = lucky_pick(d, LUCKY_UA_KEYS)[:300]
+        ev = self._base(ts, "lucky_web", ip, port, "Lucky 反代",
+                        "Lucky 反代 · " + ("拦截 / 异常路径" if verdict == "scan" else "正常访问"),
+                        verdict, target, raw)
+        ev["method"] = lucky_pick(d, LUCKY_METHOD_KEYS)[:16]
+        ev["status"] = st
+        ev["ua"] = ua
+        ev["referer"] = referer[:300]
+        ev["sess_id"] = session_id(ip, ua, ts)
+        # 键值 / combined 日志都没有 scheme 证据：proto=web、scheme_conf=none，绝不硬猜
+        return self._tag(ev, "web", "web")
+
+    def parse_lucky_sys(self, line, log_path=""):
+        """2.0.0 B5：lucky 系统运行日志解析框架（D 路径占位骨架）。
+
+        系统日志没有「扫描探测 / 端口敲门」语义，verdict 一律 normal；
+        级别 / 模块只进 action 文本，未匹配到就留空，绝不猜值。
+        """
+        raw = (line or "").strip()
+        if not raw:
+            return None
+        d = lucky_fields(raw)
+        ip = ""
+        for k in LUCKY_IP_KEYS:
+            ip = knock_ip(d.get(k))
+            if ip:
+                break
+        if not ip:
+            for cand in IP_ANY.findall(raw):
+                if cand.startswith(("127.", "0.")):
+                    continue
+                ip = knock_ip(cand)
+                if ip:
+                    break
+        if not ip:
+            return None
+        ts = 0
+        for k in LUCKY_TS_KEYS:
+            ts = knock_to_ts(d.get(k))
+            if ts:
+                break
+        if not ts:
+            m = LUCKY_TS.search(raw)
+            ts = knock_to_ts(m.group(1)) if m else time.time()
+        lv = LUCKY_LEVEL.search(raw)
+        mod = LUCKY_MODULE.search(raw)
+        level = lv.group(1).upper() if lv else ""
+        module = mod.group(1).upper() if mod else ""
+        action = "Lucky 系统" + ((" · " + level) if level else "") + ((" " + module) if module else "")
+        ev = self._base(ts, "lucky_sys", ip, 0, "Lucky 系统", action, "normal", "", raw)
+        return self._tag(ev, "system", "")
 
     def set_verifier(self, verifier):
         """注入在线校验器，让新出现的公网 IP 首次入库即进入后台核验队列。"""
@@ -968,6 +1172,8 @@ class Collector(object):
             "knock_installed": os.path.isfile(self.cfg.get("knock_marker", "/etc/ipsense/knock.enabled")),
             "knock_app_enabled": bool(self.cfg.get("source_knock_app", False)),
             "knock_app_dir": str(self.cfg.get("knock_app_dir", "")),
+            "lucky_web_enabled": bool(self.cfg.get("source_lucky_web", False)),
+            "lucky_sys_enabled": bool(self.cfg.get("source_lucky_sys", False)),
             "knock_app_files": (self.knock_dir_tailer.info()
                                 if self.knock_dir_tailer else None),
             "fnos_audit": bool(self.cfg.get("source_fnos_audit", True)),

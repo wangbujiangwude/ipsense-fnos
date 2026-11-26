@@ -651,6 +651,27 @@ class Store(object):
         self.clear_cache()
         return n
 
+    def purge_self_web(self, prefix="/app/ipsense"):
+        """1.1.30：一次性清理历史自身访问噪声，幂等。
+
+        只删 source='local_web' 且 path / referer 命中应用自身前缀的事件；
+        SSH / fnOS 审计 / 敲门 / 路由器等其它来源，以及提交单、密钥授权、
+        配置与缓存一概不动。删除条数写入运行日志，meta 防重复执行。
+        """
+        if self.get_meta("self_web_purged_130") == "1":
+            return 0
+        like = prefix + "/%"
+        with self.lock:
+            cur = self.conn.execute(
+                "DELETE FROM events WHERE source='local_web' AND "
+                "(path=? OR path LIKE ? OR referer LIKE ? OR referer LIKE ?)",
+                (prefix, like, "%" + prefix, "%" + like))
+            self.conn.commit()
+            n = cur.rowcount
+            self.set_meta("self_web_purged_130", "1")
+        self.clear_cache()
+        return n
+
     def geo_cache_count(self):
         with self.lock:
             return self.conn.execute("SELECT COUNT(*) FROM geo_cache").fetchone()[0]
@@ -1218,6 +1239,38 @@ class Store(object):
             rows = self.conn.execute(
                 "SELECT source,COUNT(*) n,MAX(ts) last_ts FROM events GROUP BY source").fetchall()
         return {r["source"]: {"count": r["n"], "last_ts": r["last_ts"]} for r in rows}
+
+    # ---------------- 2.0.0 B3 · 预警检测只读取数 ----------------
+    # 说明：这两个方法只 SELECT，不写库、不下发判定。阈值判定与「发不发消息」
+    # 全在 notifier.py，主包保持「只观测 · 不封禁 · 不改防火墙 · 不自动处置」。
+
+    def notify_scan_hits(self, since_ts, limit=200):
+        """窗口内按 IP 聚合的异常连接候选。
+
+        verdict 口径与 trend()/status() 一致：scan / attack / knock 三类算异常。
+        返回 hits（异常条数）、ports（不同目标端口数）、last_ts，由调用方判阈值。
+        """
+        sql = ("SELECT ip, COUNT(*) AS hits, COUNT(DISTINCT port) AS ports, "
+               "MAX(ts) AS last_ts, GROUP_CONCAT(DISTINCT source) AS sources "
+               "FROM events WHERE ts>=? AND verdict IN ('scan','attack','knock') "
+               "GROUP BY ip ORDER BY hits DESC LIMIT ?")
+        with self.lock:
+            rows = self.conn.execute(sql, (float(since_ts), int(limit))).fetchall()
+        return [{"ip": r["ip"], "hits": int(r["hits"]),
+                 "ports": int(r["ports"] or 0), "last_ts": float(r["last_ts"]),
+                 "sources": r["sources"] or ""} for r in rows]
+
+    def notify_traffic_rows(self, since_ts, limit=50000):
+        """窗口内 Web 事件原始行，供检测引擎从 raw 解析 $body_bytes_sent。
+
+        不改 schema / INSERT_SQL / _row：combined 日志的 status+bytes 已在
+        raw 中，解析放在 notifier，避免为预警功能改动采集与存储主链。
+        """
+        sql = ("SELECT ip, raw FROM events WHERE ts>=? AND source='local_web' "
+               "AND raw IS NOT NULL AND raw<>'' LIMIT ?")
+        with self.lock:
+            rows = self.conn.execute(sql, (float(since_ts), int(limit))).fetchall()
+        return [(r["ip"], r["raw"]) for r in rows]
 
     def close(self):
         with self.lock:

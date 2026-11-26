@@ -1,21 +1,23 @@
 # -*- coding: utf-8 -*-
-"""多源 IP 归属交叉校验（1.0.8 新增）。
+"""IP 归属核验（1.0.8 新增，1.1.30 改口径）。
 
-背景：随包 ip2region xdb 是单一来源，对运营商网段重分配更新滞后
-（实测 220.205.0.0/16 多个 IP 被误判到河北/天津/内蒙古/甘肃）。
-本模块引入三家在线权威源 + 本地库共 4 票，按国家/省份/城市多数派裁决：
+历史背景：1.0.8 引入三家在线源 + 本地库共 4 票多数派裁决，
+用来订正 ip2region 对运营商网段重分配的滞后。
 
-  - ip-api.com  中文，返回国家/省/市/运营商/经纬度
-  - ip.sb       英文，返回国家/省/市/ASN
-  - ipinfo.io   ISO 码 + loc 坐标
-  - 本地 xdb    离线兜底
+1.1.30 实测结论：ip-api.com / ipinfo.io 对国内省市的判定反而不如随包
+离线库稳定（同一 IP 常给出济南 / 东营两套结果），继续参与多数派只会把
+离线库的正确结果带偏。因此去掉这两家，改成：
+
+  - ip2region(本地)  主裁决：国家 / 省 / 市 / 运营商 / 区县全部以它为准
+  - ip.sb(参考)      只补坐标与空缺字段，不参与主裁决、不改归属
+  - 独立区级源        ip9.com.cn / 用户自定义接口，只补 district
 
 设计约束：
   1. 纯标准库 urllib，强制直连（ProxyHandler({})），与 locate.py 一致；
   2. 结果落 SQLite geo_cache，TTL 默认 30 天，遵守在线源限流；
   3. 后台低频队列校验高频公网 IP，不阻塞采集与 HTTP 响应；
-  4. 在线不可用时自动回退本地库，标记 verified=false；
-  5. 裁决后回写 events 表，让地图/排名/记录立即使用更准的归属。
+  4. 在线参考不可用时完全回退离线库，归属结果不受影响；
+  5. 核验后回写 events 表，让地图/排名/记录立即使用最新归属。
 """
 import json
 import time
@@ -28,10 +30,12 @@ import concurrent.futures
 
 UA = "Mozilla/5.0 (compatible; ipsense/1.0.8; local-nas-app)"
 
-SOURCES = ("ip-api.com", "ip.sb", "ipinfo.io", "ip2region(本地)")
-# 1.1.15：区级补充源只用来补 district，不参与 4 票裁决，
-# 避免把国内库的省级偏差带进多数派结果（实测 220.205.91.142 国内源误判广东）。
-DISTRICT_SOURCES = ("ip-api.com", "ip9.com.cn")
+# 1.1.30：源列表即前端「归属信息源」展示顺序。第一项是主裁决，
+# 其余只作参考；不再有任何在线源能改写国家 / 省 / 市。
+SOURCES = ("ip2region(本地)", "ip.sb(参考)")
+# 区级补充源只用来补 district，不参与归属裁决。
+# 1.1.30 起 ip-api.com 已被移除，这里只留 ip9.com.cn 与用户自定义接口。
+DISTRICT_SOURCES = ("ip9.com.cn",)
 
 ISO_CN = {
     "CN": "中国", "US": "美国", "JP": "日本", "KR": "韩国", "DE": "德国",
@@ -169,22 +173,9 @@ def _http(url, data=None, timeout=6):
         return r.read().decode("utf-8", "replace")[:16384]
 
 
-def fetch_ipapi(ip):
-    d = json.loads(_http("http://ip-api.com/json/%s?lang=zh-CN&fields="
-                         "status,message,country,countryCode,regionName,city,district,"
-                         "isp,lat,lon,query"
-                         % urllib.parse.quote(ip, safe="")))
-    if d.get("status") != "success":
-        return None
-    return {
-        "source": "ip-api.com", "country": norm_country(d.get("country") or d.get("countryCode")),
-        "province": norm_prov(d.get("regionName")), "city": norm_city(d.get("city")),
-        "district": norm_district(d.get("district")),
-        "isp": (d.get("isp") or "").strip(),
-        "lat": d.get("lat"), "lng": d.get("lon"),
-    }
-
-
+# 1.1.30：ip-api.com / ipinfo.io 取数函数已移除。
+# 只保留 ip.sb 一家在线源，且它的结果不再进入 vote() 的归属裁决，
+# 仅用于补坐标与运营商等空缺字段（见 vote / verify）。
 def fetch_ipsb(ip):
     d = json.loads(_http("https://api.ip.sb/geoip/" + urllib.parse.quote(ip, safe="")))
     return {
@@ -193,23 +184,6 @@ def fetch_ipsb(ip):
         "district": "",
         "isp": (d.get("isp") or d.get("asn_organization") or "").strip(),
         "lat": d.get("latitude"), "lng": d.get("longitude"),
-    }
-
-
-def fetch_ipinfo(ip):
-    d = json.loads(_http("https://ipinfo.io/%s/json" % urllib.parse.quote(ip, safe="")))
-    lat = lng = None
-    if d.get("loc") and "," in d["loc"]:
-        try:
-            a, b = d["loc"].split(",", 1)
-            lat, lng = float(a), float(b)
-        except (TypeError, ValueError):
-            pass
-    return {
-        "source": "ipinfo.io", "country": norm_country(d.get("country")),
-        "province": norm_prov(d.get("region")), "city": norm_city(d.get("city")),
-        "district": "",
-        "isp": (d.get("org") or "").strip(), "lat": lat, "lng": lng,
     }
 
 
@@ -271,8 +245,9 @@ def fetch_ip9(ip):
             "lat": x.get("lat"), "lng": x.get("lng")}
 
 
-FETCHERS = (("ip-api.com", fetch_ipapi), ("ip.sb", fetch_ipsb),
-            ("ipinfo.io", fetch_ipinfo))
+# 1.1.30：只剩 ip.sb 一家在线参考源。并行度 1，结果只用于补坐标 /
+# 运营商 / 区县，绝不改写离线库给出的国家 / 省 / 市。
+FETCHERS = (("ip.sb", fetch_ipsb),)
 
 
 def _most_common(values):
@@ -288,104 +263,96 @@ def _most_common(values):
 
 
 def vote(local, online):
-    """4 票多数派裁决，返回 (geo_dict, verification_dict)。
+    """1.1.30 裁决：离线库主裁决 + 在线源仅作参考。
 
-    local  : GeoResolver.lookup() 的完整结果
-    online : 各在线源归一化结果列表
+    local  : GeoResolver.lookup_uncached() 的完整结果（唯一归属依据）
+    online : 在线参考源结果列表（当前最多 1 条 ip.sb），不改归属
+
+    返回 (geo_dict, verification_dict)。verification["sources"] 仍保留
+    两行明细供前端「归属核验」面板展示，用 role 区分主裁决 / 参考。
     """
-    candidates = []
-    for o in online:
-        if o and o.get("country"):
-            candidates.append(o)
-    local_vote = {
-        "source": "ip2region(本地)", "country": norm_country(local.get("country")),
-        "province": norm_prov(local.get("province")), "city": norm_city(local.get("city")),
-        "district": norm_district(local.get("district")),
-        "isp": (local.get("isp") or "").strip(),
-        "lat": local.get("lat"), "lng": local.get("lng"),
-    }
-    if local_vote["country"] and local_vote["country"] != "未知":
-        candidates.append(local_vote)
+    from geoip import PROVINCE_COORDS
 
-    country, country_cnt = _most_common([c["country"] for c in candidates])
-    country = country or "未知"
-    is_cn = country in ("中国", "中国香港", "中国澳门", "中国台湾")
+    # ---- 主裁决：国家 / 省 / 市 / 运营商 / 区县全部以离线库为准 ----
+    country = norm_country(local.get("country"))
+    province = norm_prov(local.get("province"))
+    city = norm_city(local.get("city"))
+    district = norm_district(local.get("district"))
+    isp = (local.get("isp") or "").strip()
     if country in ("中国香港", "中国澳门", "中国台湾"):
+        if not province:
+            province = country
         country = "中国"
-
-    # 省份：仅中国境内参与投票，且各源需给出省份
-    prov_votes = [c["province"] for c in candidates
-                  if c["country"] in ("中国", "中国香港", "中国澳门", "中国台湾")
-                  and c["province"]]
-    province, prov_cnt = _most_common(prov_votes)
-    if province in ("中国香港", "中国澳门", "中国台湾"):
-        # 港澳台作为省级标注，国家仍为中国
-        pass
-    elif province and is_cn:
-        # 补全「省/市」后缀，与现有 PROVINCE_COORDS 对齐
-        from geoip import PROVINCE_COORDS
+    is_cn = country in ("中国", "中国香港", "中国澳门", "中国台湾")
+    if province and is_cn and province not in ("中国香港", "中国澳门", "中国台湾"):
+        # 补全「省/市」后缀，与 PROVINCE_COORDS 对齐
         for k in PROVINCE_COORDS:
             if norm_prov(k) == norm_prov(province):
                 province = k
                 break
 
-    city_votes = [c["city"] for c in candidates if c["city"]]
-    city, _ = _most_common(city_votes)
-    isp, _ = _most_common([c["isp"] for c in candidates])
-    # 1.1.15：区级单独投票，缺字段的源不参与（不把空串当一票）。
-    district, _ = _most_common([c.get("district", "") for c in candidates])
+    main_vote = {
+        "source": "ip2region(本地)", "role": "主裁决",
+        "country": country, "province": province, "city": city,
+        "district": district, "isp": isp,
+        "lat": local.get("lat"), "lng": local.get("lng"),
+    }
+    ref = None
+    for o in online:
+        if o and o.get("country"):
+            ref = dict(o)
+            break
+    if ref:
+        ref["role"] = "参考"
+        # 参考源只在主裁决缺字段时补位，绝不覆盖已有归属
+        if not isp and ref.get("isp"):
+            isp = ref["isp"]
+        if not district and ref.get("district"):
+            district = ref["district"]
 
-    # 坐标（1.0.9）：必须与最终裁决的省份一致。
-    # 旧逻辑取「第一个有坐标的在线源」，在线源缺坐标时回退本地库，
-    # 结果 112.28.131.131 被裁决为安徽省，却沿用本地库广东坐标画到了广州。
-    # 现在中国境内优先取「省份与裁决一致」的那票坐标；都没有时用省级中心点
-    # 并按 IP 轻微散开，保证地图点位与省份标注自洽。
-    from geoip import PROVINCE_COORDS
+    # ---- 坐标：必须与最终裁决的省份自洽 ----
     center = PROVINCE_COORDS.get(province) if country == "中国" else None
     lat = lng = None
     if center:
-        for c in candidates:
-            if c["source"] == "ip2region(本地)":
-                continue
-            if norm_prov(c.get("province") or "") == norm_prov(province) \
-                    and c.get("lat") is not None and c.get("lng") is not None:
-                try:
-                    lat, lng = float(c["lat"]), float(c["lng"])
-                    break
-                except (TypeError, ValueError):
-                    continue
+        # 中国境内优先取「省份与主裁决一致」的参考源城市级坐标
+        if ref and norm_prov(ref.get("province") or "") == norm_prov(province) \
+                and ref.get("lat") is not None and ref.get("lng") is not None:
+            try:
+                lat, lng = float(ref["lat"]), float(ref["lng"])
+            except (TypeError, ValueError):
+                lat = lng = None
         if lat is None:
             lat, lng = center
             h = int(hashlib.md5(str(local.get("ip") or "").encode()).hexdigest()[:6], 16)
             lat += ((h % 100) / 100.0 - 0.5) * 1.2
             lng += (((h // 100) % 100) / 100.0 - 0.5) * 1.6
     else:
-        # 海外 / 无明确省份：优先在线源城市级坐标，否则用本地库
-        for c in candidates:
-            if c["source"] != "ip2region(本地)" and c.get("lat") is not None \
-                    and c.get("lng") is not None:
-                try:
-                    lat, lng = float(c["lat"]), float(c["lng"])
-                    break
-                except (TypeError, ValueError):
-                    continue
+        # 海外 / 无明确省份：优先参考源坐标，否则用本地库坐标
+        if ref and ref.get("lat") is not None and ref.get("lng") is not None:
+            try:
+                lat, lng = float(ref["lat"]), float(ref["lng"])
+            except (TypeError, ValueError):
+                lat = lng = None
         if lat is None:
             lat, lng = local.get("lat"), local.get("lng")
 
-    # 分歧与置信度
-    countries = {c["country"] for c in candidates if c["country"]}
-    provs = {c["province"] for c in candidates
-             if c["province"] and c["province"] != "中国"}
-    disagree = len(countries) > 1 or len(provs) > 1
-    n_online = len(online)
-    if n_online >= 2 and country_cnt >= 2 and (not prov_votes or prov_cnt >= 2):
-        confidence = "high"
-    elif n_online >= 2:
-        confidence = "medium"
-    elif n_online == 1:
-        confidence = "low"
-    else:
+    # ---- 分歧与置信度：反映「参考源与离线库是否一致」，不反映在线源数量 ----
+    disagree = False
+    if ref:
+        rc = norm_country(ref.get("country"))
+        if rc in ("中国香港", "中国澳门", "中国台湾"):
+            rc = "中国"
+        rp = norm_prov(ref.get("province") or "")
+        disagree = bool((rc and rc != country) or
+                        (is_cn and rp and province and rp != norm_prov(province)))
+    valid_local = bool(country) and country != "未知"
+    if not valid_local:
         confidence = "offline"
+    elif ref and disagree:
+        confidence = "medium"
+    else:
+        # 离线库本身即可定论；参考源缺失 / 一致都不降低可信度
+        confidence = "high"
 
     scope = "cn" if (country == "中国" or province in
                      ("中国香港", "中国澳门", "中国台湾")) else "overseas"
@@ -398,11 +365,15 @@ def vote(local, online):
         "lng": round(lng, 4) if isinstance(lng, (int, float)) else None,
         "ipver": local.get("ipver", 4),
     }
+    sources = [main_vote] + ([ref] if ref else [])
     verification = {
         "confidence": confidence, "disagree": disagree,
-        "online_sources": n_online, "province_votes": prov_cnt,
-        "checked_at": time.time(), "sources": candidates,
-        "country_votes": sorted(countries), "province_candidates": sorted(provs),
+        "online_sources": len(online), "province_votes": 1 if province else 0,
+        "checked_at": time.time(), "sources": sources,
+        "country_votes": sorted({c["country"] for c in sources if c.get("country")}),
+        "province_candidates": sorted({c["province"] for c in sources
+                                       if c.get("province") and c["province"] != "中国"}),
+        "primary_source": "ip2region(本地)",
     }
     return geo, verification
 
@@ -500,15 +471,9 @@ class GeoVerifier(object):
             if hit:
                 return {"ok": True, "cached": True, "ip": ip,
                         "geo": hit, "verification": hit.get("verification")}
+        # 1.1.30：离线库是唯一归属依据，不再读取历史上「在线多数派订正」
+        # 固化下来的 local_fix，避免旧的在线判定继续覆盖离线库结果。
         local = self.geo.lookup_uncached(ip)
-        # 1.1.16：离线库省级脏值被在线多数派订正后要固化下来，否则每次
-        # force 核验都会把「重庆市」重新带进本地票、local_* 展示与地域聚合。
-        try:
-            fix = self.store.local_fix(ip) if hasattr(self.store, "local_fix") else None
-            if fix:
-                local = fix
-        except Exception as e:
-            self.log("local_fix %s: %s" % (ip, e))
         online, errors = [], []
 
         def run(item):
@@ -518,8 +483,8 @@ class GeoVerifier(object):
             except Exception as e:
                 return name, None, "%s: %s" % (name, str(e)[:80])
 
-        # 三家源并行查询：总耗时约等于最慢的一家，避免超过网关 20 s 连接超时
-        with concurrent.futures.ThreadPoolExecutor(3) as ex:
+        # 1.1.30：只查一家在线参考源，不阻塞主裁决；失败一律忽略。
+        with concurrent.futures.ThreadPoolExecutor(1) as ex:
             for name, o, err in ex.map(run, FETCHERS):
                 if o and o.get("country"):
                     online.append(o)
@@ -529,9 +494,9 @@ class GeoVerifier(object):
                     errors.append(err)
         geo, vf = vote(local, online)
         # 1.1.16：区级补充探测（独立源，不进裁决；失败不影响主流程）。
-        # 实测 ip-api.com / ip.sb / ipinfo.io 免费版都不返回 district，
-        # ip9.com.cn 的 area 对多个国内 IP 也全为空，所以 1.1.15 的自动
-        # 区级补充实际上拿不到数据；优先让用户填自己的 JSON 接口。
+        # 1.1.30：保留的 ip.sb 不返回 district，ip9.com.cn 的 area 对多个
+        # 国内 IP 也常为空，所以自动区级补充拿不到数据是常态；
+        # 优先让用户填自己的 JSON 接口，或在画像里手工补充。
         if not geo.get("district") and geo.get("country") == "中国" and \
                 self.settings.get("geo_district_enabled", True):
             try:
@@ -565,12 +530,8 @@ class GeoVerifier(object):
         except Exception as e:
             updated = 0
             self.log("apply_geo %s: %s" % (ip, e))
-        # 在线多数派与离线库冲突时固化裁决结果，杜绝脏值反复回流。
-        if vf.get("disagree") and vf.get("online_sources", 0) >= 2:
-            try:
-                self.store.put_local_fix(ip, dict(geo, ip=ip))
-            except Exception as e:
-                self.log("put_local_fix %s: %s" % (ip, e))
+        # 1.1.30：不再把在线参考源的分歧固化进 geo_local_fix。
+        # 归属只由离线库决定，参考源不一致时仅在核验面板提示（disagree）。
         self.geo.invalidate(ip)
         with self.stats_lock:
             self.verified += 1
